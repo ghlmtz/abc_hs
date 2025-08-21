@@ -19,11 +19,13 @@ import Data.Void (Void)
 type TokenParser = Parsec Void [CToken]
 type MayError = Either String 
 
-data UnaryOp = Complement | Negate 
+data UnaryOp = Complement | Negate | Not
     deriving (Show)
 data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
               | And | Or | Xor | LeftShift | RightShift
-    deriving (Show)
+              | LogAnd | LogOr | Equal | NotEqual | LessThan | LessEqual
+              | GreaterThan | GreaterEqual
+    deriving (Show, Eq)
 data Expr = Int Integer 
            | Unary UnaryOp Expr
            | Binary BinaryOp Expr Expr
@@ -81,23 +83,32 @@ constant = do
 
 unary :: TokenParser Expr
 unary = do
-    tok <- isToken L.Minus <|> isToken L.Tilde
+    tok <- isToken L.Minus <|> isToken L.Tilde <|> isToken L.Bang
     let start = case tok of 
                     L.Minus -> Negate
+                    L.Bang  -> Not
                     _     -> Complement
     Unary start <$> term
 
 precedence :: [[Operator TokenParser Expr]]
-precedence = [ [ binary  L.Star       (Binary Multiply)
-               , binary  L.Slash      (Binary Divide)
-               , binary  L.Percent    (Binary Remainder)]
-             , [ binary  L.Plus       (Binary Add)
-               , binary  L.Minus      (Binary Subtract)]
-             , [ binary  L.LeftShift  (Binary LeftShift)
-               , binary  L.RightShift (Binary RightShift)]
-             , [ binary  L.And        (Binary And)]
-             , [ binary  L.Caret      (Binary Xor)]
-             , [ binary  L.Pipe       (Binary Or)]]
+precedence = [ [ binary  L.Star         (Binary Multiply)
+               , binary  L.Slash        (Binary Divide)
+               , binary  L.Percent      (Binary Remainder)]
+             , [ binary  L.Plus         (Binary Add)
+               , binary  L.Minus        (Binary Subtract)]
+             , [ binary  L.LeftShift    (Binary LeftShift)
+               , binary  L.RightShift   (Binary RightShift)]
+             , [ binary  L.LessThan     (Binary LessThan)
+               , binary  L.GreaterThan  (Binary GreaterThan)
+               , binary  L.LessEqual    (Binary LessEqual)
+               , binary  L.GreaterEqual (Binary GreaterEqual)]
+             , [ binary  L.EqualEqual   (Binary Equal)
+               , binary  L.BangEqual    (Binary NotEqual)]
+             , [ binary  L.And          (Binary And)]
+             , [ binary  L.Caret        (Binary Xor)]
+             , [ binary  L.Pipe         (Binary Or)]
+             , [ binary  L.AndAnd       (Binary LogAnd)]
+             , [ binary  L.PipePipe     (Binary LogOr)]]
 
 binary :: MonadParsec e s m => Token s -> (a -> a -> a) -> Operator m a
 binary name f = InfixL (f <$ isToken name)
