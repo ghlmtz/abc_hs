@@ -5,12 +5,16 @@ module Types
 , NStatement(..)
 , NFunction(..)
 , NProgram(..)
-, ProgType(..)
 , CToken(..)
+, TProgram(..)
+, TFuncDef(..)
+, TInstruction(..)
+, TOperand(..)
+, TValue(..)
+, MayError
 ) where
 
-data ProgType = Normal | Lex | Parse | Codegen
-    deriving (Eq)
+type MayError = Either String 
 
 data CToken = Identifier String
            | Constant Integer
@@ -38,3 +42,13 @@ data NFunction = Function String NStatement
 newtype NProgram = NFunction NFunction
     deriving (Show)
 
+data TProgram = TProgram TFuncDef
+    deriving (Show)
+data TFuncDef = TFuncDef String [TInstruction]
+    deriving (Show)
+data TInstruction = TReturn TValue | TUnary TOperand TValue TValue 
+    deriving (Show)
+data TValue = TConstant Integer | TVar String
+    deriving (Show)
+data TOperand = TComplement | TNegate
+    deriving (Show)

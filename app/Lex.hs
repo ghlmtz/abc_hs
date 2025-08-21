@@ -3,23 +3,20 @@ module Lex
   lexer
 ) where
 
-import Parse (parser)
-import Types (ProgType(..), CToken(..))
+import Types (CToken(..), MayError)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import Data.Void (Void)
-import System.Exit (exitFailure)
 
 type Parser = Parsec Void String
 
-lexer :: String -> ProgType -> IO ()
-lexer file t = do
-    input <- readFile file
+lexer :: String -> MayError [CToken]
+lexer input = do
     case parse (skipSpace *> manyTill (parseFile <* optional skipSpace) eof) "abc_lexer" input of
-        Left e -> putStr (errorBundlePretty e) >> exitFailure
-        Right e -> if t == Lex then print e else parser e t file
+        Left e -> Left $ errorBundlePretty e
+        Right e -> Right e
 
 skipSpace :: Parser ()
 skipSpace = L.space

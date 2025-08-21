@@ -4,25 +4,16 @@ module Parse
 ) where
 
 import Types
-import Codegen (translateParse)
 
 import Text.Megaparsec
 import Data.Void (Void)
-import System.Exit (exitFailure)
 
 type TokenParser = Parsec Void [CToken]
 
-parser :: [CToken] -> ProgType -> String -> IO ()
-parser toks t file = case parse (program <* eof) "abc_parse" toks of
-        Left e -> putStr (show e) >> exitFailure
-        Right e -> if t == Parse then print e
-           else do
-            let arg = translateParse e
-            if t == Normal then writeAsmFile arg file
-            else print arg
-
-writeAsmFile :: String -> String -> IO ()
-writeAsmFile out = flip writeFile out . flip (++) "s" . init
+parser :: [CToken] -> MayError NProgram
+parser toks = case parse (program <* eof) "abc_parse" toks of
+        Left e -> Left (show e)
+        Right e -> Right e
 
 isToken :: MonadParsec e s m => Token s -> m (Token s)
 isToken t = satisfy (== t)

@@ -3,18 +3,43 @@ import System.Exit
 import System.Environment
 
 import Lex (lexer)
-import Types (ProgType(..))
+import Parse (parser)
+import Tacky (tack)
+import Codegen (genCode)
 
+data ProgType = Normal | Lex | Parse | Tacky | Codegen
+    deriving (Eq)
+
+getProgType :: [String] -> ProgType
+getProgType args = if null args then Normal
+    else case head args of 
+                "-l" -> Lex
+                "-p" -> Parse
+                "-t" -> Tacky
+                "-c" -> Codegen
+                _    -> error "Bad option!"
+                
 main :: IO ()
 main = do
     args <- getArgs
     if null args
         then print "Going to need an argument there, bud" >> exitFailure
-    else
-        if null (tail args) then lexer (head args) Normal
-        else
-            lexer (head args) $ case head (tail args) of
-                "-l" -> Lex
-                "-p" -> Parse
-                "-c" -> Codegen
-                _    -> error "Bad option!"
+    else do
+        input <- readFile (head args)
+        let optIs = (== getProgType (tail args))
+            result = contUnless (optIs Lex) (lexer input) >>= 
+                     contUnless (optIs Parse) . parser >>= 
+                     contUnless (optIs Tacky) . tack >>=
+                     contUnless (optIs Codegen) . genCode
+        case result of 
+            Left (Left e) -> print e >> exitFailure -- error from the parser
+            Left (Right e) -> putStrLn e -- premature stop from option
+            Right asm -> writeAsmFile (show asm) (head args) -- time to compile!
+
+writeAsmFile :: String -> String -> IO ()
+writeAsmFile out = flip writeFile out . flip (++) "s" . init
+
+contUnless :: Show b => Bool -> Either a b -> Either (Either a String) b
+contUnless stop input = case input of 
+    Left e -> Left (Left e)
+    Right e -> if stop then Left (Right (show e)) else Right e

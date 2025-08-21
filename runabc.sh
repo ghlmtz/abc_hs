@@ -18,6 +18,9 @@ else
     if [[ "$*" == *"--parse"* ]]; then
         opts="-p"
     fi
+    if [[ "$*" == *"--tacky"* ]]; then
+        opts="-t"
+    fi
     if [[ "$*" == *"--codegen"* ]]; then
         opts="-c"
     fi
