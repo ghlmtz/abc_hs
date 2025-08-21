@@ -26,6 +26,7 @@ data Instruction = Return Value
 data Value = Constant Integer | Var String
     deriving (Show)
 data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
+              | LeftShift | RightShift | And | Or | Xor
     deriving (Show)
 data UnaryOp = Complement | Negate
     deriving (Show)
@@ -68,6 +69,11 @@ binOp P.Subtract = Subtract
 binOp P.Multiply = Multiply
 binOp P.Divide = Divide
 binOp P.Remainder = Remainder
+binOp P.Xor = Xor
+binOp P.Or = Or
+binOp P.And = And
+binOp P.LeftShift = LeftShift
+binOp P.RightShift = RightShift
 
 tmpVar :: Counter String
 tmpVar = do

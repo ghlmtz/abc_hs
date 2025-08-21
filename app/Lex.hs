@@ -19,16 +19,12 @@ data CToken = Identifier String
            | LeftBrace
            | RightBrace
            | Semicolon
-           | Minus
-           | Tilde
            | Decrement
            | Int
            | Return
            | Void
-           | Plus
-           | Star
-           | Slash
-           | Percent
+           | Tilde | Minus | Plus | Star | Slash | Percent
+           | And | Pipe | Caret | LeftShift | RightShift
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -77,7 +73,10 @@ singleChars = [
     ('+', Plus),
     ('*', Star),
     ('/', Slash),
-    ('%', Percent)]
+    ('%', Percent),
+    ('&', And),
+    ('|', Pipe),
+    ('^', Caret)]
 
 singleChar :: Char -> CToken -> Parser CToken
 singleChar c t = char c >> pure t
@@ -90,7 +89,9 @@ reserved = [
 
 multiChars :: [] ([Char], CToken)
 multiChars = [
-    ("--", Decrement)]
+    ("--", Decrement),
+    ("<<", LeftShift),
+    (">>", RightShift)]
 
 multiChar :: String -> CToken -> Parser CToken
 multiChar c t = string c >> return t

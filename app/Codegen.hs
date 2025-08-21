@@ -1,6 +1,6 @@
 module Codegen
 (
-    translateParse, genCode
+    genCode
 ) where
 
 import qualified Tacky as T
@@ -12,6 +12,7 @@ import Data.Maybe (fromMaybe)
 data Program = Program FuncDef
 data FuncDef = FuncDef String [Instruction]
 data Instruction = Mov Operand Operand
+                 | MovB Operand Operand
                  | Ret
                  | AllocateStack Integer
                  | Unary UnaryOp Operand
@@ -19,14 +20,14 @@ data Instruction = Mov Operand Operand
                  | IDiv Operand
                  | Cdq
 data UnaryOp = Neg | Not
-data BinaryOp = Add | Sub | Mult
+data BinaryOp = Add | Sub | Mult | And | Or | Xor | LeftShift | RightShift
 data Operand = Imm Integer
              | Reg Register
              | Stack Integer
-data Register = AX | DX | R10 | R11
+data Register = AX | CL | DX | R10 | R11
 
 type VarList = State [String]
-type MayError = Either String 
+type MayError = Either String
 
 instance Show Operand where show = showOperand
 showOperand :: Operand -> String
@@ -36,11 +37,13 @@ showOperand (Reg DX) = "%edx"
 showOperand (Reg R10) = "%r10d"
 showOperand (Reg R11) = "%r11d"
 showOperand (Stack n) = show n ++ "(%rbp)"
+showOperand (Reg CL) = "%cl"
 
 instance Show Instruction where show = showInstruction
 
 showInstruction :: Instruction -> [Char]
 showInstruction (Mov o1 o2) = "\tmovl\t" ++ show o1 ++ ", " ++ show o2
+showInstruction (MovB o1 o2) = "\tmovb\t" ++ show o1 ++ ", " ++ show o2
 showInstruction Ret = "\tmovq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
 showInstruction (AllocateStack n) = "\tsubq\t$" ++ show n ++ ", %rsp"
 showInstruction (Unary un op) = show un ++ "\t" ++ show op
@@ -63,14 +66,16 @@ showBinaryOp :: BinaryOp -> [Char]
 showBinaryOp Add = "\taddl"
 showBinaryOp Sub = "\tsubl"
 showBinaryOp Mult = "\timul"
+showBinaryOp And = "\tand"
+showBinaryOp Or = "\tor"
+showBinaryOp Xor = "\txor"
+showBinaryOp LeftShift = "\tsal"
+showBinaryOp RightShift = "\tsar"
 
 instance Show Program where show = showProgram
 
 showProgram :: Program -> [Char]
 showProgram (Program f) = show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
-
-translateParse :: T.Program -> String
-translateParse = show . genCode
 
 genCode :: T.Program -> MayError Program
 genCode prog = pure $ evalState (pass1 prog) []
@@ -80,9 +85,9 @@ pass1 (T.Program f) = Program <$> funcDef f
 
 funcDef :: T.FuncDef -> VarList FuncDef
 funcDef (T.FuncDef name stmt) = do
-    foo <- mapM statement stmt
+    mapStmt <- mapM statement stmt
     s <- get
-    return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx $ length s) : concat foo)
+    return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx $ length s) : concat mapStmt)
 
 statement :: T.Instruction -> VarList [Instruction]
 statement (T.Return e) = do
@@ -110,16 +115,12 @@ statement (T.Binary T.Remainder s1 s2 dst) = do
           Imm _ -> [Mov s2' (Reg R10), IDiv (Reg R10)]
           _     -> [IDiv s2']
     return $ [Mov s1' (Reg AX), Cdq] ++ d ++ [Mov (Reg DX) dst']
-statement (T.Binary T.Multiply s1 s2 dst) = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let mov = if isStack s1' && isStack dst'
-              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
-              else [Mov s1' dst']
-    if isStack dst'
-        then return $ mov ++ [Mov dst' (Reg R11), Binary Mult s2' (Reg R11), Mov (Reg R11) dst']
-        else return $ mov ++ [Binary Mult s2' dst']
+statement (T.Binary T.Multiply s1 s2 dst) = foo T.Multiply s1 s2 dst
+statement (T.Binary T.And s1 s2 dst) = foo T.And s1 s2 dst
+statement (T.Binary T.Or s1 s2 dst) = foo T.Or s1 s2 dst
+statement (T.Binary T.Xor s1 s2 dst) = foo T.Xor s1 s2 dst
+statement (T.Binary T.LeftShift s1 s2 dst) = shift T.LeftShift s1 s2 dst
+statement (T.Binary T.RightShift s1 s2 dst) = shift T.RightShift s1 s2 dst
 statement (T.Binary op s1 s2 dst) = do
     s1' <- expr s1
     s2' <- expr s2
@@ -131,6 +132,33 @@ statement (T.Binary op s1 s2 dst) = do
               then [Mov s1' (Reg R10), Mov (Reg R10) dst']
               else [Mov s1' dst']
     return $ mov ++ cmd
+
+foo :: T.BinaryOp -> T.Value -> T.Value -> T.Value -> VarList [Instruction]
+foo op s1 s2 dst = do
+    s1' <- expr s1
+    s2' <- expr s2
+    dst' <- expr dst
+    let mov = if isStack s1' && isStack dst'
+              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
+              else [Mov s1' dst']
+    if isStack dst'
+        then return $ mov ++ [Mov dst' (Reg R11), Binary (binOp' op) s2' (Reg R11), Mov (Reg R11) dst']
+        else return $ mov ++ [Binary (binOp' op) s2' dst']
+
+shift :: T.BinaryOp -> T.Value -> T.Value -> T.Value -> VarList [Instruction]
+shift op s1 s2 dst = do
+    s1' <- expr s1
+    s2' <- expr s2
+    dst' <- expr dst
+    let mov = if isStack s1' && isStack dst'
+              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
+              else [Mov s1' dst']
+        s2_int = ([MovB s2' (Reg CL) | isStack s2'])
+        s2'' = if isStack s2' then Reg CL else s2'
+
+    if isStack dst'
+        then return $ mov ++ s2_int ++ [Mov dst' (Reg R11), Binary (binOp' op) s2'' (Reg R11), Mov (Reg R11) dst']
+        else return $ mov ++ s2_int ++ [Binary (binOp' op) s2'' dst']
 
 isStack :: Operand -> Bool
 isStack (Stack _) = True
@@ -144,6 +172,15 @@ binOp :: T.BinaryOp -> BinaryOp
 binOp T.Add = Add
 binOp T.Subtract = Sub
 binOp _ = error "Bad binary operand"
+
+binOp' :: T.BinaryOp -> BinaryOp
+binOp' T.Multiply = Mult
+binOp' T.And = And
+binOp' T.Or = Or
+binOp' T.Xor = Xor
+binOp' T.LeftShift = LeftShift
+binOp' T.RightShift = RightShift
+binOp' _ = error "Bad binary operand"
 
 expr :: T.Value -> VarList Operand
 expr (T.Constant i) = return $ Imm i

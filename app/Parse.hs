@@ -22,6 +22,7 @@ type MayError = Either String
 data UnaryOp = Complement | Negate 
     deriving (Show)
 data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
+              | And | Or | Xor | LeftShift | RightShift
     deriving (Show)
 data Expr = Int Integer 
            | Unary UnaryOp Expr
@@ -87,11 +88,16 @@ unary = do
     Unary start <$> term
 
 precedence :: [[Operator TokenParser Expr]]
-precedence = [ [ binary  L.Star    (Binary Multiply)
-               , binary  L.Slash   (Binary Divide)
-               , binary  L.Percent (Binary Remainder)]
-             , [ binary  L.Plus    (Binary Add)
-               , binary  L.Minus   (Binary Subtract)]]
+precedence = [ [ binary  L.Star       (Binary Multiply)
+               , binary  L.Slash      (Binary Divide)
+               , binary  L.Percent    (Binary Remainder)]
+             , [ binary  L.Plus       (Binary Add)
+               , binary  L.Minus      (Binary Subtract)]
+             , [ binary  L.LeftShift  (Binary LeftShift)
+               , binary  L.RightShift (Binary RightShift)]
+             , [ binary  L.And        (Binary And)]
+             , [ binary  L.Caret      (Binary Xor)]
+             , [ binary  L.Pipe       (Binary Or)]]
 
 binary :: MonadParsec e s m => Token s -> (a -> a -> a) -> Operator m a
 binary name f = InfixL (f <$ isToken name)
