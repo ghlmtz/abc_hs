@@ -34,6 +34,19 @@ expr (NUnary op e) = do
     d <- tmpVar
     let dst = TVar d
     return (dst, snd src ++ [TUnary (operand op) (fst src) dst])
+expr (NBinary op e1 e2) = do
+    s1 <- expr e1
+    s2 <- expr e2
+    d <- tmpVar
+    let dst = TVar d
+    return (dst, snd s1 ++ snd s2 ++ [TBinary (binOp op) (fst s1) (fst s2) dst])
+
+binOp :: BinaryOp -> TBinOperand
+binOp Add = TAdd
+binOp Subtract = TSubtract
+binOp Multiply = TMultiply
+binOp Divide = TDivide
+binOp Remainder = TRemainder
 
 tmpVar :: Counter String
 tmpVar = do

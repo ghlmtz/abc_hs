@@ -6,6 +6,7 @@ module Parse
 import Types
 
 import Text.Megaparsec
+import Control.Monad.Combinators.Expr
 import Data.Void (Void)
 
 type TokenParser = Parsec Void [CToken]
@@ -38,8 +39,10 @@ function = do
 statement :: TokenParser NStatement
 statement = NReturn <$> (isToken Return *> expr <* isToken Semicolon)
 
-expr :: TokenParser NExpr
-expr = constant <|> unary <|> between (isToken LeftParen) (isToken RightParen) expr
+term :: TokenParser NExpr
+term = constant 
+   <|> unary
+   <|> between (isToken LeftParen) (isToken RightParen) expr
 
 constant :: TokenParser NExpr
 constant = do
@@ -49,10 +52,23 @@ constant = do
         getConstant _ = 0
     NInt . getConstant <$> satisfy isConstant
 
+expr :: TokenParser NExpr
+expr = makeExprParser term precedence
+
 unary :: TokenParser NExpr
 unary = do
     tok <- isToken Minus <|> isToken Tilde
     let start = case tok of 
                     Minus -> Negate
                     _     -> Complement
-    NUnary start <$> expr
+    NUnary start <$> term
+
+precedence :: [[Operator TokenParser NExpr]]
+precedence = [ [ binary  Star    (NBinary Multiply)
+               , binary  Slash   (NBinary Divide)
+               , binary  Percent (NBinary Remainder)]
+             , [ binary  Plus    (NBinary Add)
+               , binary  Minus   (NBinary Subtract)]]
+
+binary :: MonadParsec e s m => Token s -> (a -> a -> a) -> Operator m a
+binary name f = InfixL (f <$ isToken name)

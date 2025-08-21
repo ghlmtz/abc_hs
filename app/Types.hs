@@ -1,6 +1,7 @@
 module Types
 (
   UnaryOp(..)
+, BinaryOp (..)
 , NExpr(..)
 , NStatement(..)
 , NFunction(..)
@@ -11,6 +12,7 @@ module Types
 , TInstruction(..)
 , TOperand(..)
 , TValue(..)
+, TBinOperand(..)
 , MayError
 ) where
 
@@ -37,7 +39,11 @@ data CToken = Identifier String
 
 data UnaryOp = Complement | Negate 
     deriving (Show)
-data NExpr = NInt Integer | NUnary UnaryOp NExpr
+data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
+    deriving (Show)
+data NExpr = NInt Integer 
+           | NUnary UnaryOp NExpr
+           | NBinary BinaryOp NExpr NExpr
     deriving (Show)
 newtype NStatement = NReturn NExpr
     deriving (Show)
@@ -50,9 +56,13 @@ data TProgram = TProgram TFuncDef
     deriving (Show)
 data TFuncDef = TFuncDef String [TInstruction]
     deriving (Show)
-data TInstruction = TReturn TValue | TUnary TOperand TValue TValue 
+data TInstruction = TReturn TValue 
+                  | TUnary TOperand TValue TValue 
+                  | TBinary TBinOperand TValue TValue TValue
     deriving (Show)
 data TValue = TConstant Integer | TVar String
+    deriving (Show)
+data TBinOperand = TAdd | TSubtract | TMultiply | TDivide | TRemainder
     deriving (Show)
 data TOperand = TComplement | TNegate
     deriving (Show)
