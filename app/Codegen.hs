@@ -21,6 +21,8 @@ data Operand = Imm Integer
              | Stack Integer
 data Register = AX | R10
 
+type VarList = State [String]
+
 instance Show Operand where show = showOperand
 showOperand :: Operand -> String
 showOperand (Imm i) = "$" ++ show i
@@ -57,16 +59,16 @@ translateParse = show . genCode
 genCode :: TProgram -> MayError Program
 genCode prog = pure $ evalState (pass1 prog) []
 
-pass1 :: TProgram -> State [String] Program
+pass1 :: TProgram -> VarList Program
 pass1 (TProgram f) = Program <$> funcDef f
 
-funcDef :: TFuncDef -> State [String] FuncDef
+funcDef :: TFuncDef -> VarList FuncDef
 funcDef (TFuncDef name stmt) = do
     foo <- mapM statement stmt
     s <- get
     return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx $ length s) : concat foo)
 
-statement :: TInstruction -> State [String] [Instruction]
+statement :: TInstruction -> VarList [Instruction]
 statement (TReturn e) = do
     e' <- expr e
     return [Mov e' (Reg AX), Ret]
@@ -85,7 +87,7 @@ operand :: TOperand -> UnaryOperand
 operand TComplement = Not
 operand TNegate = Neg
 
-expr :: TValue -> State [String] Operand
+expr :: TValue -> VarList Operand
 expr (TConstant i) = return $ Imm i
 expr (TVar v) = do
     s <- get

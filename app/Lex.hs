@@ -54,7 +54,11 @@ singleChars = [
     (')', RightParen),
     (';', Semicolon),
     ('-', Minus),
-    ('~', Tilde)]
+    ('~', Tilde),
+    ('+', Plus),
+    ('*', Star),
+    ('/', Slash),
+    ('%', Percent)]
 
 singleChar :: Char -> CToken -> Parser CToken
 singleChar c t = char c >> pure t

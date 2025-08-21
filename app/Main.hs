@@ -11,14 +11,16 @@ data ProgType = Normal | Lex | Parse | Tacky | Codegen
     deriving (Eq)
 
 getProgType :: [String] -> ProgType
-getProgType args = if null args then Normal
-    else case head args of 
+getProgType args = 
+    if null args 
+        then Normal
+        else case head args of 
                 "-l" -> Lex
                 "-p" -> Parse
                 "-t" -> Tacky
                 "-c" -> Codegen
                 _    -> error "Bad option!"
-                
+
 main :: IO ()
 main = do
     args <- getArgs

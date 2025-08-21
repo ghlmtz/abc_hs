@@ -29,6 +29,10 @@ data CToken = Identifier String
            | Int
            | Return
            | Void
+           | Plus
+           | Star
+           | Slash
+           | Percent
     deriving (Show, Eq, Ord)
 
 data UnaryOp = Complement | Negate 
