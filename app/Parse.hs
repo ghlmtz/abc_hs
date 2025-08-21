@@ -63,6 +63,9 @@ function = do
 statement :: TokenParser Statement
 statement = Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
 
+expr :: TokenParser Expr
+expr = makeExprParser term precedence
+
 term :: TokenParser Expr
 term = constant 
    <|> unary
@@ -75,9 +78,6 @@ constant = do
         getConstant (L.Constant x) = x
         getConstant _ = 0
     Int . getConstant <$> satisfy isConstant
-
-expr :: TokenParser Expr
-expr = makeExprParser term precedence
 
 unary :: TokenParser Expr
 unary = do

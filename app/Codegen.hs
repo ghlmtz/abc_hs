@@ -9,7 +9,7 @@ import Control.Monad.State
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
 
-data Program = Program FuncDef
+newtype Program = Program FuncDef
 data FuncDef = FuncDef String [Instruction]
 data Instruction = Mov Operand Operand
                  | MovB Operand Operand
@@ -99,66 +99,55 @@ statement (T.Unary op src dst) = do
     if isStack src' && isStack dst'
         then return [Mov src' (Reg R10), Mov (Reg R10) dst', Unary (operand op) dst']
         else return [Mov src' dst', Unary (operand op) dst']
-statement (T.Binary T.Divide s1 s2 dst) = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let d = case s2' of
-          Imm _ -> [Mov s2' (Reg R10), IDiv (Reg R10)]
-          _     -> [IDiv s2']
-    return $ [Mov s1' (Reg AX), Cdq] ++ d ++ [Mov (Reg AX) dst']
-statement (T.Binary T.Remainder s1 s2 dst) = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let d = case s2' of
-          Imm _ -> [Mov s2' (Reg R10), IDiv (Reg R10)]
-          _     -> [IDiv s2']
-    return $ [Mov s1' (Reg AX), Cdq] ++ d ++ [Mov (Reg DX) dst']
-statement (T.Binary T.Multiply s1 s2 dst) = foo T.Multiply s1 s2 dst
-statement (T.Binary T.And s1 s2 dst) = foo T.And s1 s2 dst
-statement (T.Binary T.Or s1 s2 dst) = foo T.Or s1 s2 dst
-statement (T.Binary T.Xor s1 s2 dst) = foo T.Xor s1 s2 dst
-statement (T.Binary T.LeftShift s1 s2 dst) = shift T.LeftShift s1 s2 dst
-statement (T.Binary T.RightShift s1 s2 dst) = shift T.RightShift s1 s2 dst
-statement (T.Binary op s1 s2 dst) = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let cmd = if isStack s2' && isStack dst'
-              then [Mov s2' (Reg R10), Binary (binOp op) (Reg R10) dst']
-              else [Binary (binOp op) s2' dst']
-        mov = if isStack s1' && isStack dst'
-              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
-              else [Mov s1' dst']
-    return $ mov ++ cmd
+statement (T.Binary op s1 s2 dst) = 
+    binaryOp op <$> expr s1 <*> expr s2 <*> expr dst
 
-foo :: T.BinaryOp -> T.Value -> T.Value -> T.Value -> VarList [Instruction]
+binaryOp ::T.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
+binaryOp T.Divide s1 s2 dst = do
+    let d = case s2 of
+          Imm _ -> [Mov s2 (Reg R10), IDiv (Reg R10)]
+          _     -> [IDiv s2]
+    [Mov s1 (Reg AX), Cdq] ++ d ++ [Mov (Reg AX) dst]
+binaryOp T.Remainder s1 s2 dst = do
+    let d = case s2 of
+          Imm _ -> [Mov s2 (Reg R10), IDiv (Reg R10)]
+          _     -> [IDiv s2]
+    [Mov s1 (Reg AX), Cdq] ++ d ++ [Mov (Reg DX) dst]
+binaryOp T.Multiply s1 s2 dst = foo T.Multiply s1 s2 dst
+binaryOp T.And s1 s2 dst = foo T.And s1 s2 dst
+binaryOp T.Or s1 s2 dst = foo T.Or s1 s2 dst
+binaryOp T.Xor s1 s2 dst = foo T.Xor s1 s2 dst
+binaryOp T.LeftShift s1 s2 dst = shift T.LeftShift s1 s2 dst
+binaryOp T.RightShift s1 s2 dst = shift T.RightShift s1 s2 dst
+binaryOp op s1 s2 dst = do
+    let cmd = if isStack s2 && isStack dst
+              then [Mov s2 (Reg R10), Binary (binOp op) (Reg R10) dst]
+              else [Binary (binOp op) s2 dst]
+        mov = if isStack s1 && isStack dst
+              then [Mov s1 (Reg R10), Mov (Reg R10) dst]
+              else [Mov s1 dst]
+    mov ++ cmd
+
+foo :: T.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
 foo op s1 s2 dst = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let mov = if isStack s1' && isStack dst'
-              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
-              else [Mov s1' dst']
-    if isStack dst'
-        then return $ mov ++ [Mov dst' (Reg R11), Binary (binOp' op) s2' (Reg R11), Mov (Reg R11) dst']
-        else return $ mov ++ [Binary (binOp' op) s2' dst']
+    let mov = if isStack s1 && isStack dst
+              then [Mov s1 (Reg R10), Mov (Reg R10) dst]
+              else [Mov s1 dst]
+    if isStack dst
+        then mov ++ [Mov dst (Reg R11), Binary (binOp' op) s2 (Reg R11), Mov (Reg R11) dst]
+        else mov ++ [Binary (binOp' op) s2 dst]
 
-shift :: T.BinaryOp -> T.Value -> T.Value -> T.Value -> VarList [Instruction]
+shift :: T.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
 shift op s1 s2 dst = do
-    s1' <- expr s1
-    s2' <- expr s2
-    dst' <- expr dst
-    let mov = if isStack s1' && isStack dst'
-              then [Mov s1' (Reg R10), Mov (Reg R10) dst']
-              else [Mov s1' dst']
-        s2_int = ([MovB s2' (Reg CL) | isStack s2'])
-        s2'' = if isStack s2' then Reg CL else s2'
+    let mov = if isStack s1 && isStack dst
+              then [Mov s1 (Reg R10), Mov (Reg R10) dst]
+              else [Mov s1 dst]
+        s2_int = ([MovB s2 (Reg CL) | isStack s2])
+        s2'' = if isStack s2 then Reg CL else s2
 
-    if isStack dst'
-        then return $ mov ++ s2_int ++ [Mov dst' (Reg R11), Binary (binOp' op) s2'' (Reg R11), Mov (Reg R11) dst']
-        else return $ mov ++ s2_int ++ [Binary (binOp' op) s2'' dst']
+    if isStack dst
+        then mov ++ s2_int ++ [Mov dst (Reg R11), Binary (binOp' op) s2'' (Reg R11), Mov (Reg R11) dst]
+        else mov ++ s2_int ++ [Binary (binOp' op) s2'' dst]
 
 isStack :: Operand -> Bool
 isStack (Stack _) = True

@@ -15,7 +15,7 @@ import Control.Monad.State
 
 type Counter = State Int
 
-data Program = Program FuncDef
+newtype Program = Program FuncDef
     deriving (Show)
 data FuncDef = FuncDef String [Instruction]
     deriving (Show)

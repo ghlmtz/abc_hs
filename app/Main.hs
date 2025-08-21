@@ -36,10 +36,10 @@ main = do
         case result of 
             Left (Left e) -> print e >> exitFailure -- error from the parser
             Left (Right e) -> putStrLn e -- premature stop from option
-            Right asm -> writeAsmFile (show asm) (head args) -- time to compile!
+            Right asm -> writeAsmFile (head args) (show asm) -- time to compile!
 
-writeAsmFile :: String -> String -> IO ()
-writeAsmFile out = flip writeFile out . flip (++) "s" . init
+writeAsmFile :: FilePath -> String -> IO ()
+writeAsmFile = writeFile . (++ "s") . init
 
 contUnless :: Show b => Bool -> Either a b -> Either (Either a String) b
 contUnless stop input = case input of 
