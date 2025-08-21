@@ -1,9 +1,8 @@
 module Lex
 (
   lexer
+, CToken(..)
 ) where
-
-import Types (CToken(..), MayError)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
@@ -11,6 +10,26 @@ import qualified Text.Megaparsec.Char.Lexer as L
 import Data.Void (Void)
 
 type Parser = Parsec Void String
+type MayError = Either String 
+
+data CToken = Identifier String
+           | Constant Integer
+           | LeftParen
+           | RightParen
+           | LeftBrace
+           | RightBrace
+           | Semicolon
+           | Minus
+           | Tilde
+           | Decrement
+           | Int
+           | Return
+           | Void
+           | Plus
+           | Star
+           | Slash
+           | Percent
+    deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
 lexer input = do

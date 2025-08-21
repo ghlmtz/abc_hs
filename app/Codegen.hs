@@ -3,7 +3,7 @@ module Codegen
     translateParse, genCode
 ) where
 
-import Types(TProgram(..), MayError, TFuncDef(..), TInstruction(..), TOperand(..), TBinOperand(..), TValue(..))
+import qualified Tacky as T
 
 import Control.Monad.State
 import Data.List (elemIndex)
@@ -14,18 +14,19 @@ data FuncDef = FuncDef String [Instruction]
 data Instruction = Mov Operand Operand
                  | Ret
                  | AllocateStack Integer
-                 | Unary UnaryOperand Operand
-                 | Binary BinaryOperand Operand Operand
+                 | Unary UnaryOp Operand
+                 | Binary BinaryOp Operand Operand
                  | IDiv Operand
                  | Cdq
-data UnaryOperand = Neg | Not
-data BinaryOperand = Add | Sub | Mult
+data UnaryOp = Neg | Not
+data BinaryOp = Add | Sub | Mult
 data Operand = Imm Integer
              | Reg Register
              | Stack Integer
 data Register = AX | DX | R10 | R11
 
 type VarList = State [String]
+type MayError = Either String 
 
 instance Show Operand where show = showOperand
 showOperand :: Operand -> String
@@ -52,13 +53,13 @@ instance Show FuncDef where show = showFuncDef
 showFuncDef :: FuncDef -> [Char]
 showFuncDef (FuncDef s is) = "\t.globl " ++ s ++ "\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . show) is
 
-instance Show UnaryOperand where show = showUnaryOp
-showUnaryOp :: UnaryOperand -> [Char]
+instance Show UnaryOp where show = showUnaryOp
+showUnaryOp :: UnaryOp -> [Char]
 showUnaryOp Neg = "\tnegl"
 showUnaryOp Not = "\tnotl"
 
-instance Show BinaryOperand where show = showBinaryOp
-showBinaryOp :: BinaryOperand -> [Char]
+instance Show BinaryOp where show = showBinaryOp
+showBinaryOp :: BinaryOp -> [Char]
 showBinaryOp Add = "\taddl"
 showBinaryOp Sub = "\tsubl"
 showBinaryOp Mult = "\timul"
@@ -68,32 +69,32 @@ instance Show Program where show = showProgram
 showProgram :: Program -> [Char]
 showProgram (Program f) = show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
-translateParse :: TProgram -> String
+translateParse :: T.Program -> String
 translateParse = show . genCode
 
-genCode :: TProgram -> MayError Program
+genCode :: T.Program -> MayError Program
 genCode prog = pure $ evalState (pass1 prog) []
 
-pass1 :: TProgram -> VarList Program
-pass1 (TProgram f) = Program <$> funcDef f
+pass1 :: T.Program -> VarList Program
+pass1 (T.Program f) = Program <$> funcDef f
 
-funcDef :: TFuncDef -> VarList FuncDef
-funcDef (TFuncDef name stmt) = do
+funcDef :: T.FuncDef -> VarList FuncDef
+funcDef (T.FuncDef name stmt) = do
     foo <- mapM statement stmt
     s <- get
     return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx $ length s) : concat foo)
 
-statement :: TInstruction -> VarList [Instruction]
-statement (TReturn e) = do
+statement :: T.Instruction -> VarList [Instruction]
+statement (T.Return e) = do
     e' <- expr e
     return [Mov e' (Reg AX), Ret]
-statement (TUnary op src dst) = do
+statement (T.Unary op src dst) = do
     src' <- expr src
     dst' <- expr dst
     if isStack src' && isStack dst'
         then return [Mov src' (Reg R10), Mov (Reg R10) dst', Unary (operand op) dst']
         else return [Mov src' dst', Unary (operand op) dst']
-statement (TBinary TDivide s1 s2 dst) = do
+statement (T.Binary T.Divide s1 s2 dst) = do
     s1' <- expr s1
     s2' <- expr s2
     dst' <- expr dst
@@ -101,7 +102,7 @@ statement (TBinary TDivide s1 s2 dst) = do
           Imm _ -> [Mov s2' (Reg R10), IDiv (Reg R10)]
           _     -> [IDiv s2']
     return $ [Mov s1' (Reg AX), Cdq] ++ d ++ [Mov (Reg AX) dst']
-statement (TBinary TRemainder s1 s2 dst) = do
+statement (T.Binary T.Remainder s1 s2 dst) = do
     s1' <- expr s1
     s2' <- expr s2
     dst' <- expr dst
@@ -109,7 +110,7 @@ statement (TBinary TRemainder s1 s2 dst) = do
           Imm _ -> [Mov s2' (Reg R10), IDiv (Reg R10)]
           _     -> [IDiv s2']
     return $ [Mov s1' (Reg AX), Cdq] ++ d ++ [Mov (Reg DX) dst']
-statement (TBinary TMultiply s1 s2 dst) = do
+statement (T.Binary T.Multiply s1 s2 dst) = do
     s1' <- expr s1
     s2' <- expr s2
     dst' <- expr dst
@@ -119,7 +120,7 @@ statement (TBinary TMultiply s1 s2 dst) = do
     if isStack dst'
         then return $ mov ++ [Mov dst' (Reg R11), Binary Mult s2' (Reg R11), Mov (Reg R11) dst']
         else return $ mov ++ [Binary Mult s2' dst']
-statement (TBinary op s1 s2 dst) = do
+statement (T.Binary op s1 s2 dst) = do
     s1' <- expr s1
     s2' <- expr s2
     dst' <- expr dst
@@ -135,18 +136,18 @@ isStack :: Operand -> Bool
 isStack (Stack _) = True
 isStack _ = False
 
-operand :: TOperand -> UnaryOperand
-operand TComplement = Not
-operand TNegate = Neg
+operand :: T.UnaryOp -> UnaryOp
+operand T.Complement = Not
+operand T.Negate = Neg
 
-binOp :: TBinOperand -> BinaryOperand
-binOp TAdd = Add
-binOp TSubtract = Sub
+binOp :: T.BinaryOp -> BinaryOp
+binOp T.Add = Add
+binOp T.Subtract = Sub
 binOp _ = error "Bad binary operand"
 
-expr :: TValue -> VarList Operand
-expr (TConstant i) = return $ Imm i
-expr (TVar v) = do
+expr :: T.Value -> VarList Operand
+expr (T.Constant i) = return $ Imm i
+expr (T.Var v) = do
     s <- get
     if v `elem` s then return $ Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
     else put (s ++ [v]) >> return (Stack $ convertIdx $ length s)

@@ -1,17 +1,40 @@
 module Parse
 (
-    parser
+  parser
+, UnaryOp(..)
+, BinaryOp(..)
+, Expr(..)
+, Statement(..)
+, Function(..)
+, Program(..)
 ) where
 
-import Types
+import Lex (CToken)
+import qualified Lex as L
 
 import Text.Megaparsec
 import Control.Monad.Combinators.Expr
 import Data.Void (Void)
 
 type TokenParser = Parsec Void [CToken]
+type MayError = Either String 
 
-parser :: [CToken] -> MayError NProgram
+data UnaryOp = Complement | Negate 
+    deriving (Show)
+data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
+    deriving (Show)
+data Expr = Int Integer 
+           | Unary UnaryOp Expr
+           | Binary BinaryOp Expr Expr
+    deriving (Show)
+newtype Statement = Return Expr
+    deriving (Show)
+data Function = Function String Statement
+    deriving (Show)
+newtype Program = Program Function
+    deriving (Show)
+
+parser :: [CToken] -> MayError Program
 parser toks = case parse (program <* eof) "abc_parse" toks of
         Left e -> Left (show e)
         Right e -> Right e
@@ -20,55 +43,55 @@ isToken :: MonadParsec e s m => Token s -> m (Token s)
 isToken t = satisfy (== t)
 
 getIdent :: CToken -> String
-getIdent (Identifier x) = x
+getIdent (L.Identifier x) = x
 getIdent _ = ""
 
 isIdent :: CToken -> Bool
-isIdent (Identifier _) = True
+isIdent (L.Identifier _) = True
 isIdent _ = False
 
-program :: TokenParser NProgram
-program = NFunction <$> function
+program :: TokenParser Program
+program = Program <$> function
 
-function :: TokenParser NFunction
+function :: TokenParser Function
 function = do
-    name <- isToken Int *> satisfy isIdent
-    body <- isToken LeftParen *> isToken Void *> isToken RightParen *> isToken LeftBrace *> statement <* isToken RightBrace
+    name <- isToken L.Int *> satisfy isIdent
+    body <- isToken L.LeftParen *> isToken L.Void *> isToken L.RightParen *> isToken L.LeftBrace *> statement <* isToken L.RightBrace
     return $ Function (getIdent name) body
 
-statement :: TokenParser NStatement
-statement = NReturn <$> (isToken Return *> expr <* isToken Semicolon)
+statement :: TokenParser Statement
+statement = Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
 
-term :: TokenParser NExpr
+term :: TokenParser Expr
 term = constant 
    <|> unary
-   <|> between (isToken LeftParen) (isToken RightParen) expr
+   <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
 
-constant :: TokenParser NExpr
+constant :: TokenParser Expr
 constant = do
-    let isConstant (Constant _) = True
+    let isConstant (L.Constant _) = True
         isConstant _ = False
-        getConstant (Constant x) = x
+        getConstant (L.Constant x) = x
         getConstant _ = 0
-    NInt . getConstant <$> satisfy isConstant
+    Int . getConstant <$> satisfy isConstant
 
-expr :: TokenParser NExpr
+expr :: TokenParser Expr
 expr = makeExprParser term precedence
 
-unary :: TokenParser NExpr
+unary :: TokenParser Expr
 unary = do
-    tok <- isToken Minus <|> isToken Tilde
+    tok <- isToken L.Minus <|> isToken L.Tilde
     let start = case tok of 
-                    Minus -> Negate
+                    L.Minus -> Negate
                     _     -> Complement
-    NUnary start <$> term
+    Unary start <$> term
 
-precedence :: [[Operator TokenParser NExpr]]
-precedence = [ [ binary  Star    (NBinary Multiply)
-               , binary  Slash   (NBinary Divide)
-               , binary  Percent (NBinary Remainder)]
-             , [ binary  Plus    (NBinary Add)
-               , binary  Minus   (NBinary Subtract)]]
+precedence :: [[Operator TokenParser Expr]]
+precedence = [ [ binary  L.Star    (Binary Multiply)
+               , binary  L.Slash   (Binary Divide)
+               , binary  L.Percent (Binary Remainder)]
+             , [ binary  L.Plus    (Binary Add)
+               , binary  L.Minus   (Binary Subtract)]]
 
 binary :: MonadParsec e s m => Token s -> (a -> a -> a) -> Operator m a
 binary name f = InfixL (f <$ isToken name)
