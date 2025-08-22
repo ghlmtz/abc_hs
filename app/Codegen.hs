@@ -140,10 +140,8 @@ statement (T.JNZero cond target) = do
     cond' <- expr cond
     return $ fixCmp (Imm 0) cond' ++ [JmpCC NE target]
 statement (T.Label lbl) = return [Label lbl]
-statement (T.Copy src dst) = do
-    src' <- expr src
-    dst' <- expr dst
-    return [Mov src' dst']
+statement (T.Copy src dst) = 
+    fixMov <$> expr src <*> expr dst
 
 binaryOp :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
 binaryOp op

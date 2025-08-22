@@ -11,10 +11,15 @@ import Data.Maybe (isJust)
 data SemanticState = SemanticState {
   variableMap :: [(String, String)]
 , nameCount  :: Int
+, err :: Maybe String
 }
 
 resolve :: Program -> Either String Program
-resolve prog = Right $ evalState (resolveProg prog) SemanticState {variableMap = [], nameCount = 0}
+resolve prog = do
+    let (prog', s) = runState (resolveProg prog) SemanticState {variableMap = [], nameCount = 0, err = Nothing}
+    case err s of
+        Just e -> Left e
+        Nothing -> Right prog'
 
 resolveProg :: Program -> State SemanticState Program
 resolveProg (Program f) = Program <$> resolveFunc f
@@ -31,11 +36,15 @@ resolveStmt (Return e) = Return <$> resolveExpr e
 resolveStmt (Expression e) = Expression <$> resolveExpr e
 resolveStmt Null = return Null
 
+writeError :: String -> State SemanticState a
+writeError s = do
+    modify (\x -> x { err = Just s}) *> error s
+
 resolveDecl :: Declaration -> State SemanticState Declaration
 resolveDecl (Declaration name i) = do
     m <- gets variableMap
     unique <- uniqueName
-    if isJust (lookup name m) then error "Duplicate variable declaration!"
+    if isJust (lookup name m) then writeError "Duplicate variable declaration!"
     else
         modify $ \x -> x {variableMap = (name, unique) : variableMap x}
     case i of
@@ -47,12 +56,12 @@ resolveDecl (Declaration name i) = do
 resolveExpr :: Expr -> State SemanticState Expr
 resolveExpr (Assignment (Var s) r) = do
     Assignment <$> resolveExpr (Var s) <*> resolveExpr r
-resolveExpr (Assignment _ _) = error "Invalid lvalue!"
+resolveExpr (Assignment _ _) = writeError "Invalid lvalue!"
 resolveExpr (Var v) = do
     m <- gets variableMap
-    return $ case lookup v m of
-        Just x -> Var x
-        Nothing -> error "Undeclared variable!"
+    case lookup v m of
+        Just x -> return $ Var x
+        Nothing -> writeError "Undeclared variable!"
 resolveExpr (Unary op e) = Unary op <$> resolveExpr e
 resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
