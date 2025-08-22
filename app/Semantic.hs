@@ -57,6 +57,9 @@ resolveExpr :: Expr -> State SemanticState Expr
 resolveExpr (Assignment (Var s) r) = do
     Assignment <$> resolveExpr (Var s) <*> resolveExpr r
 resolveExpr (Assignment _ _) = writeError "Invalid lvalue!"
+resolveExpr (CompoundAssignment op (Var s) r) = do
+    CompoundAssignment op <$> resolveExpr (Var s) <*> resolveExpr r
+resolveExpr (CompoundAssignment {}) = writeError "Invalid lvalue!"
 resolveExpr (Var v) = do
     m <- gets variableMap
     case lookup v m of

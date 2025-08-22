@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.5.0.0 -- 2025-08-22
+
+* Chapter 5 done including extra credit. Will need to think about how to reference lvalues in the future, assignment/prefix is hardcoded to Var for now. I assume the book will get into that later.
+
 ## 0.4.0.0 -- 2025-08-21
 
 * Chapter 4 tests pass and I got chapter 3 extra credit in. Given the way the AST/IR is generated, I didn't need to generate single-byte registers for the set commands. I'd like to do that once the test suite really starts depending on it.

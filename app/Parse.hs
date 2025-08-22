@@ -33,6 +33,7 @@ data Expr = Int Integer
            | Binary BinaryOp Expr Expr
            | Var String
            | Assignment Expr Expr
+           | CompoundAssignment BinaryOp Expr Expr
     deriving (Show)
 data Declaration = Declaration String (Maybe Expr)
     deriving (Show)
@@ -153,7 +154,17 @@ precedence = [ [ binary  L.Star         (Binary Multiply)
              , [ binary  L.Pipe         (Binary Or)]
              , [ binary  L.AndAnd       (Binary LogAnd)]
              , [ binary  L.PipePipe     (Binary LogOr)]
-             , [ binaryR L.Equal        Assignment]]
+             , [ binaryR L.Equal        Assignment
+               , binaryR L.PlusEqual    (CompoundAssignment Add)
+               , binaryR L.MinusEqual   (CompoundAssignment Subtract)
+               , binaryR L.StarEqual    (CompoundAssignment Multiply)
+               , binaryR L.SlashEqual   (CompoundAssignment Divide)
+               , binaryR L.PercentEqual (CompoundAssignment Remainder)
+               , binaryR L.AndEqual     (CompoundAssignment And)
+               , binaryR L.OrEqual      (CompoundAssignment Or)
+               , binaryR L.XorEqual     (CompoundAssignment Xor)
+               , binaryR L.LeftShiftEqual (CompoundAssignment LeftShift)
+               , binaryR L.RightShiftEqual (CompoundAssignment RightShift)]]
 
 binary :: MonadParsec e s m => Token s -> (a -> a -> a) -> Operator m a
 binary name f = InfixL (f <$ isToken name)

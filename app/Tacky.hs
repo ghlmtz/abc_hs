@@ -128,6 +128,9 @@ expr (P.Var v) = return (Var v, [])
 expr (P.Assignment (P.Var v) right) = do
     rs <- expr right
     return (Var v, snd rs ++ [Copy (fst rs) (Var v)])
+expr (P.CompoundAssignment op (P.Var v) right) = do
+    rs <- expr $ P.Binary op (P.Var v) right
+    return (Var v, snd rs ++ [Copy (fst rs) (Var v)])
 expr _ = error "Invalid expression!"
 
 tmpVar :: Counter String
