@@ -10,16 +10,56 @@ import Data.Maybe (isJust)
 
 data SemanticState = SemanticState {
   variableMap :: [(String, String)]
+, labels :: [(String, String)]
 , nameCount  :: Int
 , err :: Maybe String
 }
 
+initState :: SemanticState
+initState = SemanticState {
+      variableMap = []
+    , labels = []
+    , nameCount = 0
+    , err = Nothing}
+
 resolve :: Program -> Either String Program
 resolve prog = do
-    let (prog', s) = runState (resolveProg prog) SemanticState {variableMap = [], nameCount = 0, err = Nothing}
-    case err s of
+    let result = runState (resolveProg prog) initState 
+    case err (snd result) of
+        Just e -> Left e
+        Nothing -> resolveGoto result
+
+resolveGoto :: (Program, SemanticState) -> Either String Program
+resolveGoto (prog, s) = do
+    let (prog', s') = runState (gotoProg prog) s 
+    case err s' of
         Just e -> Left e
         Nothing -> Right prog'
+
+gotoProg :: Program -> State SemanticState Program
+gotoProg (Program f) = Program <$> gotoFunc f
+
+gotoFunc :: Function -> State SemanticState Function
+gotoFunc (Function name items) = Function name <$> mapM gotoItem items
+
+gotoItem :: BlockItem -> State SemanticState BlockItem
+gotoItem (S stmt) = S <$> gotoStmt stmt
+gotoItem (D decl) = return $ D decl
+
+gotoStmt :: Statement -> State SemanticState Statement
+gotoStmt (Labelled name stmt) = Labelled name <$> gotoStmt stmt
+gotoStmt (Goto name) = do
+    m <- gets labels
+    case lookup name m of
+        Just x -> return $ Goto x
+        Nothing -> writeError "Goto missing label!"
+gotoStmt (If e1 s1 s2) = do
+    s1' <- gotoStmt s1
+    s2' <- case s2 of
+            Just e -> Just <$> gotoStmt e
+            Nothing -> return Nothing
+    return $ If e1 s1' s2'
+gotoStmt s = return s
 
 resolveProg :: Program -> State SemanticState Program
 resolveProg (Program f) = Program <$> resolveFunc f
@@ -41,6 +81,15 @@ resolveStmt (If e1 e2 e3) = do
             Just e -> Just <$> resolveStmt e
             Nothing -> return Nothing
     return $ If r1 r2 r3
+resolveStmt (Goto label) = return $ Goto label
+resolveStmt (Labelled name stmt) = do
+    m <- gets labels
+    s1 <- resolveStmt stmt
+    unique <- uniqueLabel
+    if isJust (lookup name m) then writeError "Duplicate label declaration!"
+    else
+        modify $ \x -> x {labels = (name, unique) : labels x}
+    return $ Labelled unique s1
 resolveStmt Null = return Null
 
 writeError :: String -> State SemanticState a
@@ -50,7 +99,7 @@ writeError s = do
 resolveDecl :: Declaration -> State SemanticState Declaration
 resolveDecl (Declaration name i) = do
     m <- gets variableMap
-    unique <- uniqueName
+    unique <- uniqueVar
     if isJust (lookup name m) then writeError "Duplicate variable declaration!"
     else
         modify $ \x -> x {variableMap = (name, unique) : variableMap x}
@@ -85,8 +134,14 @@ resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
 resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
 
-uniqueName :: State SemanticState String
-uniqueName = do
+uniqueName :: String -> State SemanticState String
+uniqueName s = do
     ct <- gets (show . nameCount)
     modify $ \x -> x {nameCount = 1 + nameCount x}
-    return $ "var." ++ ct
+    return $ s ++ ct
+
+uniqueVar :: State SemanticState String
+uniqueVar = uniqueName "var."
+
+uniqueLabel :: State SemanticState String
+uniqueLabel = uniqueName "lbl_"

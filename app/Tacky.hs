@@ -59,6 +59,8 @@ statement (P.Return e) = do
     (dst, is) <- expr e
     return $ is ++ [Return dst]
 statement (P.Expression e) = snd <$> expr e
+statement (P.Goto lbl) = return [Jump lbl]
+statement (P.Labelled lbl stmt) = (:) (Label lbl) <$> statement stmt
 statement (P.If e1 e2 e3) = do
     (cond, is) <- expr e1
     ifBlock <- statement e2

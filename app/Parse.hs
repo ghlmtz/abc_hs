@@ -40,7 +40,9 @@ data Declaration = Declaration String (Maybe Expr)
     deriving (Show)
 data Statement = Return Expr
                | Expression Expr
+               | Goto String
                | If Expr Statement (Maybe Statement)
+               | Labelled String Statement
                | Null
     deriving (Show)
 data BlockItem = S Statement | D Declaration
@@ -86,11 +88,17 @@ declaration = do
     return $ Declaration (getIdent name) assign
 
 statement :: TokenParser Statement
-statement = ret <|> ifStmt <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
+statement =  try labelStmt <|> ret <|> ifStmt <|> goto <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
     where semicolon = do
             _ <- isToken L.Semicolon
             return Null
           ret = Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
+          labelStmt = do
+            s <- satisfy isIdent <* isToken L.Colon
+            Labelled (getIdent s) <$> statement
+          goto = do
+            s <- isToken L.Goto *> satisfy isIdent <* isToken L.Semicolon
+            return $ Goto (getIdent s)
 
 ifStmt :: TokenParser Statement
 ifStmt = do

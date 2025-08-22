@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.6.0.0 -- 2025-08-22
+
+* Chapter 6 done, with goto. Defintely turing complete, if annoying to write anything useful.
+
 ## 0.5.0.0 -- 2025-08-22
 
 * Chapter 5 done including extra credit. Will need to think about how to reference lvalues in the future, assignment/prefix is hardcoded to Var for now. I assume the book will get into that later.
