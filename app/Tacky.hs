@@ -44,12 +44,22 @@ scan :: P.Program -> Counter Program
 scan (P.Program f) = Program <$> funcDef f
 
 funcDef :: P.Function -> Counter FuncDef
-funcDef (P.Function name stmt) = FuncDef name <$> statement stmt
+funcDef (P.Function name items) = 
+    FuncDef name . (:) (Return (Constant 0)) . concat <$> mapM blockItem items
+
+blockItem :: P.BlockItem -> Counter [Instruction]
+blockItem (P.S s) = statement s
+blockItem (P.D (P.Declaration name (Just v))) = do
+    foo <- expr $ P.Assignment (P.Var name) v
+    return $ snd foo
+blockItem (P.D (P.Declaration _ Nothing)) = return []
 
 statement :: P.Statement -> Counter [Instruction]
 statement (P.Return e) = do
     (dst, is) <- expr e
     return $ is ++ [Return dst]
+statement P.Null = return []
+statement (P.Expression e) = snd <$> expr e
 
 operand :: P.UnaryOp -> UnaryOp
 operand P.Complement = Complement
@@ -95,6 +105,12 @@ expr (P.Binary op e1 e2) = do
     s2 <- expr e2
     dst <- Var <$> tmpVar
     return (dst, snd s1 ++ snd s2 ++ [Binary op (fst s1) (fst s2) dst])
+expr (P.Var v) = return (Var v, [])
+expr (P.Assignment (P.Var v) right) = do
+    rs <- expr right
+    return (Var v, snd rs ++ [Copy (fst rs) (Var v)])
+expr _ = error "Invalid expression!"
+
 
 tmpVar :: Counter String
 tmpVar = do

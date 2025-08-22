@@ -4,10 +4,11 @@ import System.Environment
 
 import Lex (lexer)
 import Parse (parser)
+import Semantic (resolve)
 import Tacky (tack)
 import Codegen (genCode)
 
-data ProgType = Normal | Lex | Parse | Tacky | Codegen
+data ProgType = Normal | Lex | Parse | Semantic | Tacky | Codegen
     deriving (Eq)
 
 getProgType :: [String] -> ProgType
@@ -17,6 +18,7 @@ getProgType args =
         else case head args of 
                 "-l" -> Lex
                 "-p" -> Parse
+                "-s" -> Semantic
                 "-t" -> Tacky
                 "-c" -> Codegen
                 _    -> error "Bad option!"
@@ -31,6 +33,7 @@ main = do
         let optIs = (== getProgType (tail args))
             result = contUnless (optIs Lex) (lexer input) >>= 
                      contUnless (optIs Parse) . parser >>= 
+                     contUnless (optIs Semantic) . resolve >>=
                      contUnless (optIs Tacky) . tack >>=
                      contUnless (optIs Codegen) . genCode
         case result of 

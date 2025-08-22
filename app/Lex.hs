@@ -25,7 +25,7 @@ data CToken = Identifier String
            | Void
            | Tilde | Minus | Plus | Star | Slash | Percent
            | And | Pipe | Caret | LeftShift | RightShift
-           | AndAnd | PipePipe | EqualEqual | BangEqual
+           | AndAnd | PipePipe | EqualEqual | BangEqual | Equal
            | Bang | LessThan | GreaterThan | LessEqual | GreaterEqual
     deriving (Show, Eq, Ord)
 
@@ -81,7 +81,8 @@ singleChars = [
     ('^', Caret),
     ('!', Bang),
     ('<', LessThan),
-    ('>', GreaterThan)]
+    ('>', GreaterThan),
+    ('=', Equal)]
 
 singleChar :: Char -> CToken -> Parser CToken
 singleChar c t = char c >> pure t

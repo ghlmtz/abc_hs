@@ -18,6 +18,9 @@ else
     if [[ "$*" == *"--parse"* ]]; then
         opts="-p"
     fi
+    if [[ "$*" == *"--validate"* ]]; then
+        opts="-s"
+    fi
     if [[ "$*" == *"--tacky"* ]]; then
         opts="-t"
     fi
