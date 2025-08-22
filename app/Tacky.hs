@@ -44,7 +44,7 @@ scan :: P.Program -> Counter Program
 scan (P.Program f) = Program <$> funcDef f
 
 funcDef :: P.Function -> Counter FuncDef
-funcDef (P.Function name items) =
+funcDef (P.Function name (P.Block items)) =
     FuncDef name . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
 
 blockItem :: P.BlockItem -> Counter [Instruction]

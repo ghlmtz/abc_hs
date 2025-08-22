@@ -40,7 +40,7 @@ gotoProg :: Program -> State SemanticState Program
 gotoProg (Program f) = Program <$> gotoFunc f
 
 gotoFunc :: Function -> State SemanticState Function
-gotoFunc (Function name items) = Function name <$> mapM gotoItem items
+gotoFunc (Function name (Block items)) = Function name . Block <$> mapM gotoItem items
 
 gotoItem :: BlockItem -> State SemanticState BlockItem
 gotoItem (S stmt) = S <$> gotoStmt stmt
@@ -65,7 +65,7 @@ resolveProg :: Program -> State SemanticState Program
 resolveProg (Program f) = Program <$> resolveFunc f
 
 resolveFunc :: Function -> State SemanticState Function
-resolveFunc (Function name items) = Function name <$> mapM resolveItem items
+resolveFunc (Function name (Block items)) = Function name . Block <$> mapM resolveItem items
 
 resolveItem :: BlockItem -> State SemanticState BlockItem
 resolveItem (S stmt) = S <$> resolveStmt stmt

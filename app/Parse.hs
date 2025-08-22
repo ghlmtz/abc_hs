@@ -6,6 +6,7 @@ module Parse
 , Expr(..)
 , Declaration(..)
 , Statement(..)
+, Block(..)
 , BlockItem(..)
 , Function(..)
 , Program(..)
@@ -38,16 +39,19 @@ data Expr = Int Integer
     deriving (Show)
 data Declaration = Declaration String (Maybe Expr)
     deriving (Show)
+newtype Block = Block [BlockItem]
+    deriving (Show)
 data Statement = Return Expr
                | Expression Expr
                | Goto String
+               | Compound Block
                | If Expr Statement (Maybe Statement)
                | Labelled String Statement
                | Null
     deriving (Show)
 data BlockItem = S Statement | D Declaration
     deriving (Show)
-data Function = Function String [BlockItem]
+data Function = Function String Block
     deriving (Show)
 newtype Program = Program Function
     deriving (Show)
@@ -74,11 +78,16 @@ program = Program <$> function
 function :: TokenParser Function
 function = do
     name <- isToken L.Int *> satisfy isIdent
-    body <- isToken L.LeftParen *> isToken L.Void *> isToken L.RightParen *> isToken L.LeftBrace *> many blockItem <* isToken L.RightBrace
+    body <- isToken L.LeftParen *> isToken L.Void *> isToken L.RightParen *> block
     return $ Function (getIdent name) body
 
 blockItem :: TokenParser BlockItem
 blockItem = D <$> declaration <|> S <$> statement
+
+block :: TokenParser Block
+block = do
+    items <- isToken L.LeftBrace *> many blockItem <* isToken L.RightBrace
+    return $ Block items
 
 declaration :: TokenParser Declaration
 declaration = do
@@ -88,7 +97,7 @@ declaration = do
     return $ Declaration (getIdent name) assign
 
 statement :: TokenParser Statement
-statement =  try labelStmt <|> ret <|> ifStmt <|> goto <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
+statement =  try labelStmt <|> Compound <$> block <|> ret <|> ifStmt <|> goto <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
     where semicolon = do
             _ <- isToken L.Semicolon
             return Null
