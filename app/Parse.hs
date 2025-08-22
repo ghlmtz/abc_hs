@@ -21,7 +21,7 @@ import Data.Void (Void)
 type TokenParser = Parsec Void [CToken]
 type MayError = Either String 
 
-data UnaryOp = Complement | Negate | Not
+data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
     deriving (Show)
 data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
               | And | Or | Xor | LeftShift | RightShift
@@ -91,7 +91,15 @@ expr :: TokenParser Expr
 expr = makeExprParser term precedence
 
 term :: TokenParser Expr
-term = constant 
+term = do
+    t <- term'
+    un <- optional unaryPostfix
+    case un of 
+        Just post -> return $ Unary post t
+        Nothing -> return t
+
+term' :: TokenParser Expr
+term' = constant 
    <|> var
    <|> unary
    <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
@@ -107,10 +115,20 @@ constant = do
         getConstant _ = 0
     Int . getConstant <$> satisfy isConstant
 
+unaryPostfix :: TokenParser UnaryOp
+unaryPostfix = do
+    tok <- isToken L.PlusPlus <|> isToken L.MinusMinus
+    return $ case tok of
+                  L.PlusPlus -> PostInc
+                  L.MinusMinus -> PostDec
+                  _ -> error "Invalid token"
+
 unary :: TokenParser Expr
 unary = do
-    tok <- isToken L.Minus <|> isToken L.Tilde <|> isToken L.Bang
+    tok <- isToken L.PlusPlus <|> isToken L.MinusMinus <|> isToken L.Minus <|> isToken L.Tilde <|> isToken L.Bang
     let start = case tok of 
+                    L.PlusPlus -> PreInc
+                    L.MinusMinus -> PreDec
                     L.Minus -> Negate
                     L.Bang  -> Not
                     _     -> Complement

@@ -65,9 +65,28 @@ operand :: P.UnaryOp -> UnaryOp
 operand P.Complement = Complement
 operand P.Negate = Negate
 operand P.Not = Not
+operand _ = error "Invalid unary operand!"
+
+incDec :: P.BinaryOp -> P.Expr -> Bool -> Counter (Value, [Instruction])
+incDec op e post = do
+    src <- expr e
+    dst <- Var <$> tmpVar
+    if post then do
+        ret <- Var <$> tmpVar
+        return (ret, snd src ++
+            [ Copy (fst src) ret
+            , Binary op (fst src) (Constant 1) dst
+            , Copy dst (fst src)])
+    else return (fst src, 
+        [ Binary op (fst src) (Constant 1) dst
+        , Copy dst (fst src)])
 
 expr :: P.Expr -> Counter (Value, [Instruction])
 expr (P.Int c) = return (Constant c, [])
+expr (P.Unary P.PreInc e) = incDec P.Add e False
+expr (P.Unary P.PostInc e) = incDec P.Add e True
+expr (P.Unary P.PreDec e) = incDec P.Subtract e False
+expr (P.Unary P.PostDec e) = incDec P.Subtract e True
 expr (P.Unary op e) = do
     src <- expr e
     dst <- Var <$> tmpVar
@@ -110,7 +129,6 @@ expr (P.Assignment (P.Var v) right) = do
     rs <- expr right
     return (Var v, snd rs ++ [Copy (fst rs) (Var v)])
 expr _ = error "Invalid expression!"
-
 
 tmpVar :: Counter String
 tmpVar = do

@@ -62,6 +62,14 @@ resolveExpr (Var v) = do
     case lookup v m of
         Just x -> return $ Var x
         Nothing -> writeError "Undeclared variable!"
+resolveExpr (Unary PreDec (Var s)) = Unary PreDec <$> resolveExpr (Var s)
+resolveExpr (Unary PreInc (Var s)) = Unary PreInc <$> resolveExpr (Var s)
+resolveExpr (Unary PreDec _) = writeError "Invalid lvalue!"
+resolveExpr (Unary PreInc _) = writeError "Invalid lvalue!"
+resolveExpr (Unary PostDec (Var s)) = Unary PostDec <$> resolveExpr (Var s)
+resolveExpr (Unary PostInc (Var s)) = Unary PostInc <$> resolveExpr (Var s)
+resolveExpr (Unary PostDec _) = writeError "Invalid lvalue!"
+resolveExpr (Unary PostInc _) = writeError "Invalid lvalue!"
 resolveExpr (Unary op e) = Unary op <$> resolveExpr e
 resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)

@@ -19,7 +19,6 @@ data CToken = Identifier String
            | LeftBrace
            | RightBrace
            | Semicolon
-           | Decrement
            | Int
            | Return
            | Void
@@ -27,6 +26,7 @@ data CToken = Identifier String
            | And | Pipe | Caret | LeftShift | RightShift
            | AndAnd | PipePipe | EqualEqual | BangEqual | Equal
            | Bang | LessThan | GreaterThan | LessEqual | GreaterEqual
+           | PlusPlus | MinusMinus
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -95,7 +95,7 @@ reserved = [
 
 multiChars :: [] ([Char], CToken)
 multiChars = [
-    ("--", Decrement),
+    ("--", MinusMinus),
     ("<<", LeftShift),
     (">>", RightShift),
     ("<=", LessEqual),
@@ -103,7 +103,8 @@ multiChars = [
     ("==", EqualEqual),
     ("!=", BangEqual),
     ("&&", AndAnd),
-    ("||", PipePipe)]
+    ("||", PipePipe),
+    ("++", PlusPlus)]
 
 multiChar :: String -> CToken -> Parser CToken
 multiChar c t = string c >> return t
