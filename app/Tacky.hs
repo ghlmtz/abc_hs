@@ -18,8 +18,8 @@ newtype Program = Program FuncDef
     deriving (Show)
 data FuncDef = FuncDef String [Instruction]
     deriving (Show)
-data Instruction = Return Value 
-                 | Unary UnaryOp Value Value 
+data Instruction = Return Value
+                 | Unary UnaryOp Value Value
                  | Binary P.BinaryOp Value Value Value
                  | Copy Value Value
                  | Jump String
@@ -44,7 +44,7 @@ scan :: P.Program -> Counter Program
 scan (P.Program f) = Program <$> funcDef f
 
 funcDef :: P.Function -> Counter FuncDef
-funcDef (P.Function name items) = 
+funcDef (P.Function name items) =
     FuncDef name . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
 
 blockItem :: P.BlockItem -> Counter [Instruction]
@@ -58,8 +58,20 @@ statement :: P.Statement -> Counter [Instruction]
 statement (P.Return e) = do
     (dst, is) <- expr e
     return $ is ++ [Return dst]
-statement P.Null = return []
 statement (P.Expression e) = snd <$> expr e
+statement (P.If e1 e2 e3) = do
+    (cond, is) <- expr e1
+    ifBlock <- statement e2
+    end <- tmpLabel "end"
+    is' <- case e3 of
+            Just e -> do
+                elseLbl <- tmpLabel "else"
+                elseBlock <- statement e
+                return $ [JZero cond elseLbl] ++ ifBlock
+                    ++ [Jump end, Label elseLbl] ++ elseBlock
+            Nothing -> return $ JZero cond end : ifBlock
+    return $ is ++ is' ++ [Label end]
+statement P.Null = return []
 
 operand :: P.UnaryOp -> UnaryOp
 operand P.Complement = Complement
@@ -77,7 +89,7 @@ incDec op e post = do
             [ Copy (fst src) ret
             , Binary op (fst src) (Constant 1) dst
             , Copy dst (fst src)])
-    else return (fst src, 
+    else return (fst src,
         [ Binary op (fst src) (Constant 1) dst
         , Copy dst (fst src)])
 
@@ -97,8 +109,8 @@ expr (P.Binary P.LogAnd e1 e2) = do
     false <- tmpLabel "false"
     end <- tmpLabel "end"
     dst <- Var <$> tmpVar
-    return (dst, snd s1 ++ 
-        [JZero (fst s1) false] ++ snd s2 ++ 
+    return (dst, snd s1 ++
+        [JZero (fst s1) false] ++ snd s2 ++
         [ JZero (fst s2) false
         , Copy (Constant 1) dst
         , Jump end
@@ -111,8 +123,8 @@ expr (P.Binary P.LogOr e1 e2) = do
     true <- tmpLabel "true"
     end <- tmpLabel "end"
     dst <- Var <$> tmpVar
-    return (dst, snd s1 ++ 
-        [JNZero (fst s1) true] ++ snd s2 ++ 
+    return (dst, snd s1 ++
+        [JNZero (fst s1) true] ++ snd s2 ++
         [ JNZero (fst s2) true
         , Copy (Constant 0) dst
         , Jump end
@@ -131,6 +143,18 @@ expr (P.Assignment (P.Var v) right) = do
 expr (P.CompoundAssignment op (P.Var v) right) = do
     rs <- expr $ P.Binary op (P.Var v) right
     return (Var v, snd rs ++ [Copy (fst rs) (Var v)])
+expr (P.Conditional eCond eIf eElse) = do
+    (cond, is) <- expr eCond
+    e2Label <- tmpLabel "e2_"
+    end <- tmpLabel "end"
+    ret <- Var <$> tmpVar
+    ifIs <- expr eIf
+    elseIs <- expr eElse
+
+    return (ret, is ++ [JZero cond e2Label] ++ snd ifIs
+        ++ [Copy (fst ifIs) ret, Jump end, Label e2Label]
+        ++ snd elseIs ++ [Copy (fst elseIs) ret, Label end])
+
 expr _ = error "Invalid expression!"
 
 tmpVar :: Counter String

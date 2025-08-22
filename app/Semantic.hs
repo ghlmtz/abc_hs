@@ -34,6 +34,13 @@ resolveItem (D decl) = D <$> resolveDecl decl
 resolveStmt :: Statement -> State SemanticState Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
 resolveStmt (Expression e) = Expression <$> resolveExpr e
+resolveStmt (If e1 e2 e3) = do
+    r1 <- resolveExpr e1
+    r2 <- resolveStmt e2
+    r3 <- case e3 of
+            Just e -> Just <$> resolveStmt e
+            Nothing -> return Nothing
+    return $ If r1 r2 r3
 resolveStmt Null = return Null
 
 writeError :: String -> State SemanticState a
@@ -76,6 +83,7 @@ resolveExpr (Unary PostInc _) = writeError "Invalid lvalue!"
 resolveExpr (Unary op e) = Unary op <$> resolveExpr e
 resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
+resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
 
 uniqueName :: State SemanticState String
 uniqueName = do

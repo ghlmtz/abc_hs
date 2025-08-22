@@ -34,10 +34,14 @@ data Expr = Int Integer
            | Var String
            | Assignment Expr Expr
            | CompoundAssignment BinaryOp Expr Expr
+           | Conditional Expr Expr Expr
     deriving (Show)
 data Declaration = Declaration String (Maybe Expr)
     deriving (Show)
-data Statement = Return Expr | Expression Expr | Null
+data Statement = Return Expr
+               | Expression Expr
+               | If Expr Statement (Maybe Statement)
+               | Null
     deriving (Show)
 data BlockItem = S Statement | D Declaration
     deriving (Show)
@@ -82,25 +86,41 @@ declaration = do
     return $ Declaration (getIdent name) assign
 
 statement :: TokenParser Statement
-statement = ret <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
+statement = ret <|> ifStmt <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
     where semicolon = do
             _ <- isToken L.Semicolon
-            return Null    
+            return Null
           ret = Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
 
+ifStmt :: TokenParser Statement
+ifStmt = do
+    e <- isToken L.If *> isToken L.LeftParen *> expr <* isToken L.RightParen
+    s1 <- statement
+    s2 <- optional (isToken L.Else *> statement)
+    return $ If e s1 s2
+
 expr :: TokenParser Expr
-expr = makeExprParser term precedence
+expr = makeExprParser ternary assignment
+
+ternary :: TokenParser Expr
+ternary = do
+    e1 <- makeExprParser term precedence
+    trinary e1 <|> return e1
+  where
+    trinary e1 = do
+        e2 <- isToken L.Question *> expr <* isToken L.Colon
+        Conditional e1 e2 <$> ternary
 
 term :: TokenParser Expr
 term = do
     t <- term'
     un <- optional unaryPostfix
-    case un of 
+    case un of
         Just post -> return $ Unary post t
         Nothing -> return t
 
 term' :: TokenParser Expr
-term' = constant 
+term' = constant
    <|> var
    <|> unary
    <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
@@ -127,7 +147,7 @@ unaryPostfix = do
 unary :: TokenParser Expr
 unary = do
     tok <- isToken L.PlusPlus <|> isToken L.MinusMinus <|> isToken L.Minus <|> isToken L.Tilde <|> isToken L.Bang
-    let start = case tok of 
+    let start = case tok of
                     L.PlusPlus -> PreInc
                     L.MinusMinus -> PreDec
                     L.Minus -> Negate
@@ -153,8 +173,10 @@ precedence = [ [ binary  L.Star         (Binary Multiply)
              , [ binary  L.Caret        (Binary Xor)]
              , [ binary  L.Pipe         (Binary Or)]
              , [ binary  L.AndAnd       (Binary LogAnd)]
-             , [ binary  L.PipePipe     (Binary LogOr)]
-             , [ binaryR L.Equal        Assignment
+             , [ binary  L.PipePipe     (Binary LogOr)]]
+
+assignment :: [[Operator TokenParser Expr]]
+assignment = [ [ binaryR L.Equal        Assignment
                , binaryR L.PlusEqual    (CompoundAssignment Add)
                , binaryR L.MinusEqual   (CompoundAssignment Subtract)
                , binaryR L.StarEqual    (CompoundAssignment Multiply)
