@@ -31,6 +31,7 @@ data CToken = Identifier String
            | PercentEqual | AndEqual | OrEqual | XorEqual
            | LeftShiftEqual | RightShiftEqual
            | If | Else | Question | Colon | Goto
+           | Break | Continue | Do | For | While
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -95,12 +96,17 @@ singleChar c t = char c >> pure t
 
 reserved :: [] (String, CToken)
 reserved = [
+    ("break", Break),
+    ("continue", Continue),
+    ("do", Do),
     ("else", Else),
+    ("for", For),
     ("goto", Goto),
     ("if", If),
     ("int", Int),
     ("return", Return),
-    ("void", Void)]
+    ("void", Void),
+    ("while", While)]
 
 multiChars :: [] ([Char], CToken)
 multiChars = [

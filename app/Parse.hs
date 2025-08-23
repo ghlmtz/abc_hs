@@ -6,6 +6,7 @@ module Parse
 , Expr(..)
 , Declaration(..)
 , Statement(..)
+, ForInit(..)
 , Block(..)
 , BlockItem(..)
 , Function(..)
@@ -41,12 +42,19 @@ data Declaration = Declaration String (Maybe Expr)
     deriving (Show)
 newtype Block = Block [BlockItem]
     deriving (Show)
+data ForInit = InitDecl Declaration | InitExpr (Maybe Expr)
+    deriving (Show)
 data Statement = Return Expr
                | Expression Expr
                | Goto String
                | Compound Block
                | If Expr Statement (Maybe Statement)
                | Labelled String Statement
+               | Break String
+               | Continue String
+               | While Expr Statement String
+               | DoWhile Statement Expr String
+               | For ForInit (Maybe Expr) (Maybe Expr) Statement String
                | Null
     deriving (Show)
 data BlockItem = S Statement | D Declaration
@@ -97,7 +105,12 @@ declaration = do
     return $ Declaration (getIdent name) assign
 
 statement :: TokenParser Statement
-statement =  try labelStmt <|> Compound <$> block <|> ret <|> ifStmt <|> goto <|> Expression <$> expr <* isToken L.Semicolon <|> semicolon
+statement = try labelStmt 
+        <|> Compound <$> block 
+        <|> ret <|> ifStmt <|> goto 
+        <|> Expression <$> expr <* isToken L.Semicolon 
+        <|> semicolon <|> breakStmt <|> continueStmt 
+        <|> whileStmt <|> doWhileStmt <|> forStmt
     where semicolon = do
             _ <- isToken L.Semicolon
             return Null
@@ -109,6 +122,16 @@ statement =  try labelStmt <|> Compound <$> block <|> ret <|> ifStmt <|> goto <|
             s <- isToken L.Goto *> satisfy isIdent <* isToken L.Semicolon
             return $ Goto (getIdent s)
 
+breakStmt :: TokenParser Statement
+breakStmt = do
+    _ <- isToken L.Break <* isToken L.Semicolon
+    return $ Break ""
+
+continueStmt :: TokenParser Statement
+continueStmt = do
+    _ <- isToken L.Continue <* isToken L.Semicolon
+    return $ Continue ""
+
 ifStmt :: TokenParser Statement
 ifStmt = do
     e <- isToken L.If *> isToken L.LeftParen *> expr <* isToken L.RightParen
@@ -116,6 +139,33 @@ ifStmt = do
     s2 <- optional (isToken L.Else *> statement)
     return $ If e s1 s2
 
+whileStmt :: TokenParser Statement
+whileStmt = do
+    e <- isToken L.While *> isToken L.LeftParen *> expr <* isToken L.RightParen
+    s <- statement
+    return $ While e s ""
+
+doWhileStmt :: TokenParser Statement
+doWhileStmt = do
+    s <- isToken L.Do *> statement
+    e <- isToken L.While *> isToken L.LeftParen *> expr <* isToken L.RightParen <* isToken L.Semicolon
+    return $ DoWhile s e ""
+
+forInit :: TokenParser ForInit
+forInit = do
+    InitDecl <$> declaration
+    <|> do
+        e <- optional expr <* isToken L.Semicolon
+        return $ InitExpr e
+
+forStmt :: TokenParser Statement
+forStmt = do
+    i <- isToken L.For *> isToken L.LeftParen *> forInit
+    e1 <- optional expr <* isToken L.Semicolon
+    e2 <- optional expr <* isToken L.RightParen
+    s <- statement
+    return $ For i e1 e2 s ""
+  
 expr :: TokenParser Expr
 expr = makeExprParser ternary assignment
 
