@@ -62,6 +62,7 @@ gotoItem (D decl) = return $ D decl
 
 gotoStmt :: Statement -> SemanticMonad Statement
 gotoStmt (Labelled name stmt) = Labelled name <$> gotoStmt stmt
+gotoStmt (Compound (Block items)) = Compound . Block <$> mapM gotoItem items
 gotoStmt (Goto name) = do
     m <- gets labels
     case lookup name m of

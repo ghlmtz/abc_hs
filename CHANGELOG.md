@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.7.0.0 -- 2025-08-23
+
+* Chapter 7 done. I have a Reader + State in the semantic analysis for variables, probably a cleaner way of doing that. Also converted variable mappings to Data.Map.
+
 ## 0.6.0.0 -- 2025-08-22
 
 * Chapter 6 done, with goto. Defintely turing complete, if annoying to write anything useful.
