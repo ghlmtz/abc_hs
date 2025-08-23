@@ -32,6 +32,7 @@ data CToken = Identifier String
            | LeftShiftEqual | RightShiftEqual
            | If | Else | Question | Colon | Goto
            | Break | Continue | Do | For | While
+           | Case | Default | Switch
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -97,7 +98,9 @@ singleChar c t = char c >> pure t
 reserved :: [] (String, CToken)
 reserved = [
     ("break", Break),
+    ("case", Case),
     ("continue", Continue),
+    ("default", Default),
     ("do", Do),
     ("else", Else),
     ("for", For),
@@ -105,6 +108,7 @@ reserved = [
     ("if", If),
     ("int", Int),
     ("return", Return),
+    ("switch", Switch),
     ("void", Void),
     ("while", While)]
 

@@ -49,7 +49,10 @@ data Statement = Return Expr
                | Goto String
                | Compound Block
                | If Expr Statement (Maybe Statement)
+               | Switch Expr Statement String
                | Labelled String Statement
+               | Case Expr Statement
+               | Default Statement
                | Break String
                | Continue String
                | While Expr Statement String
@@ -111,6 +114,7 @@ statement = try labelStmt
         <|> Expression <$> expr <* isToken L.Semicolon 
         <|> semicolon <|> breakStmt <|> continueStmt 
         <|> whileStmt <|> doWhileStmt <|> forStmt
+        <|> switchStmt <|> caseStmt <|> defaultStmt
     where semicolon = do
             _ <- isToken L.Semicolon
             return Null
@@ -121,6 +125,23 @@ statement = try labelStmt
           goto = do
             s <- isToken L.Goto *> satisfy isIdent <* isToken L.Semicolon
             return $ Goto (getIdent s)
+
+switchStmt :: TokenParser Statement
+switchStmt = do
+    e <- isToken L.Switch *> isToken L.LeftParen *> expr <* isToken L.RightParen
+    s <- statement
+    return $ Switch e s ""
+
+caseStmt :: TokenParser Statement
+caseStmt = do
+    e <- isToken L.Case *> ternary <* isToken L.Colon
+    s <- statement
+    return $ Case e s
+
+defaultStmt :: TokenParser Statement
+defaultStmt = do
+    e <- isToken L.Default *> isToken L.Colon *> statement
+    return $ Default e
 
 breakStmt :: TokenParser Statement
 breakStmt = do

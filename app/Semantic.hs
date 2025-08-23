@@ -22,13 +22,17 @@ data SemanticState = SemanticState {
 
 data LocalVars = LocalVars {
     variableMap :: VarMap,
-    loopLabel :: Maybe String
+    breakLabel :: Maybe String,
+    continueLabel :: Maybe String,
+    switchLabel :: Maybe String
 }
 
 localVars :: LocalVars
 localVars = LocalVars {
       variableMap = M.empty
-    , loopLabel = Nothing
+    , breakLabel = Nothing
+    , continueLabel = Nothing
+    , switchLabel = Nothing
 }
 
 initState :: SemanticState
@@ -74,6 +78,11 @@ gotoStmt (If e1 s1 s2) = do
     s1' <- gotoStmt s1
     s2' <- resolveOpt s2 gotoStmt
     return $ If e1 s1' s2'
+gotoStmt (Switch e s n) = do
+    s' <- gotoStmt s
+    return $ Switch e s' n
+gotoStmt (Case e s) = Case e <$> gotoStmt s
+gotoStmt (Default s) = Default <$> gotoStmt s
 gotoStmt s = return s
 
 resolveProg :: Program -> SemanticMonad Program
@@ -119,8 +128,11 @@ resolveFor (For initial cond post body name) = do
     return $ For i c p b name
 resolveFor _ = error "Shouldn't happen"
 
-newLabel :: String -> LocalVars -> LocalVars
-newLabel new l = l { loopLabel = Just new}
+newLoopLabel :: String -> LocalVars -> LocalVars
+newLoopLabel new l = l { breakLabel = Just new, continueLabel = Just new }
+
+newSwitchLabel :: String -> LocalVars -> LocalVars
+newSwitchLabel new l = l { breakLabel = Just new, switchLabel = Just new}
 
 resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
@@ -132,37 +144,55 @@ resolveStmt (If e1 e2 e3) = do
     return $ If r1 r2 r3
 resolveStmt (While e s _) = do
     label <- uniqueLabel
-    local (newLabel label) $ do
+    local (newLoopLabel label) $ do
         e1 <- resolveExpr e
         s1 <- resolveStmt s
         return $ While e1 s1 label
 resolveStmt (DoWhile s e _) = do
     label <- uniqueLabel
-    local (newLabel label) $ do
+    local (newLoopLabel label) $ do
         e1 <- resolveExpr e
         s1 <- resolveStmt s
         return $ DoWhile s1 e1 label
+resolveStmt (Case e s) = do
+    l <- asks switchLabel
+    e1 <- resolveExpr e
+    s1 <- resolveStmt s
+    case l of 
+        Just _ -> return $ Case e1 s1
+        Nothing   -> writeError "Not in switch!"
+resolveStmt (Default s) = do
+    l <- asks switchLabel
+    s1 <- resolveStmt s
+    case l of 
+        Just _ -> return $ Default s1
+        Nothing   -> writeError "Not in switch!"
 resolveStmt (For i c p b _) = do
     label <- uniqueLabel
-    local (newLabel label) $ descend resolveFor (For i c p b label)
+    local (newLoopLabel label) $ descend resolveFor (For i c p b label)
+resolveStmt (Switch e s _) = do
+    label <- uniqueLabel
+    local (newSwitchLabel label) $ do
+        e1 <- resolveExpr e
+        s1 <- resolveStmt s
+        return $ Switch e1 s1 label
 resolveStmt (Break _) = do
-    l <- asks loopLabel
+    l <- asks breakLabel
     case l of
         Just name -> return $ Break name
         Nothing   -> writeError "No label!"
 resolveStmt (Continue _) = do
-    l <- asks loopLabel
+    l <- asks continueLabel
     case l of
         Just name -> return $ Continue name
         Nothing   -> writeError "No label!"
 resolveStmt (Goto label) = return $ Goto label
 resolveStmt (Labelled name stmt) = do
-    m <- gets labels
     s1 <- resolveStmt stmt
+    m <- gets labels
     unique <- uniqueLabel
     if isJust (lookup name m) then writeError "Duplicate label declaration!"
-    else
-        modify $ \x -> x {labels = (name, unique) : labels x}
+    else modify $ \x -> x {labels = (name, unique) : labels x}
     return $ Labelled unique s1
 resolveStmt (Compound (Block items)) = Compound <$> resolveBlock items
 resolveStmt op = return op
