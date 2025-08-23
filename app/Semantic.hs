@@ -21,12 +21,14 @@ data SemanticState = SemanticState {
 }
 
 data LocalVars = LocalVars {
-    variableMap :: VarMap
+    variableMap :: VarMap,
+    loopLabel :: Maybe String
 }
 
 localVars :: LocalVars
 localVars = LocalVars {
-    variableMap = M.empty
+      variableMap = M.empty
+    , loopLabel = Nothing
 }
 
 initState :: SemanticState
@@ -117,6 +119,9 @@ resolveFor (For initial cond post body name) = do
     return $ For i c p b name
 resolveFor _ = error "Shouldn't happen"
 
+newLabel :: String -> LocalVars -> LocalVars
+newLabel new l = l { loopLabel = Just new}
+
 resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
 resolveStmt (Expression e) = Expression <$> resolveExpr e
@@ -125,15 +130,31 @@ resolveStmt (If e1 e2 e3) = do
     r2 <- resolveStmt e2
     r3 <- resolveOpt e3 resolveStmt
     return $ If r1 r2 r3
-resolveStmt (While e s name) = do
-    e1 <- resolveExpr e
-    s1 <- resolveStmt s
-    return $ While e1 s1 name
-resolveStmt (DoWhile s e name) = do
-    e1 <- resolveExpr e
-    s1 <- resolveStmt s
-    return $ DoWhile s1 e1 name
-resolveStmt op@(For {}) = descend resolveFor op
+resolveStmt (While e s _) = do
+    label <- uniqueLabel
+    local (newLabel label) $ do
+        e1 <- resolveExpr e
+        s1 <- resolveStmt s
+        return $ While e1 s1 label
+resolveStmt (DoWhile s e _) = do
+    label <- uniqueLabel
+    local (newLabel label) $ do
+        e1 <- resolveExpr e
+        s1 <- resolveStmt s
+        return $ DoWhile s1 e1 label
+resolveStmt (For i c p b _) = do
+    label <- uniqueLabel
+    local (newLabel label) $ descend resolveFor (For i c p b label)
+resolveStmt (Break _) = do
+    l <- asks loopLabel
+    case l of
+        Just name -> return $ Break name
+        Nothing   -> writeError "No label!"
+resolveStmt (Continue _) = do
+    l <- asks loopLabel
+    case l of
+        Just name -> return $ Continue name
+        Nothing   -> writeError "No label!"
 resolveStmt (Goto label) = return $ Goto label
 resolveStmt (Labelled name stmt) = do
     m <- gets labels

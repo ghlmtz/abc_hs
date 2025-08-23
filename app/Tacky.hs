@@ -74,7 +74,43 @@ statement (P.If e1 e2 e3) = do
             Nothing -> return $ JZero cond end : ifBlock
     return $ is ++ is' ++ [Label end]
 statement (P.Compound (P.Block items)) = concat <$> mapM blockItem items
+statement (P.Break name) = return [Jump ("break_" ++ name)]
+statement (P.Continue name) = return [Jump ("continue_" ++ name)]
+statement (P.DoWhile s e name) = do
+    start <- tmpLabel "start"
+    (cond, is) <- expr e
+    body <- statement s
+    return $ [Label start] ++ body ++ [Label ("continue_" ++ name)]
+        ++ is ++ [JNZero cond start, Label ("break_" ++ name)]
+statement (P.While e s name) = do
+    let contLbl = "continue_" ++ name
+    let brkLbl = "break_" ++ name
+    (cond, is) <- expr e
+    body <- statement s
+    return $ [Label contLbl] ++ is ++ [JZero cond brkLbl] ++ body
+        ++ [Jump contLbl, Label brkLbl]
+statement (P.For i c p b name) = do
+    let contLbl = "continue_" ++ name
+    let brkLbl = "break_" ++ name 
+    start <- tmpLabel "start"
+    initial <- initFor i
+    cond <- case c of
+        Just e -> do
+            (v, is) <- expr e
+            return $ is ++ [JZero v brkLbl]
+        Nothing -> return []
+    post <- case p of
+        Just e -> snd <$> expr e
+        Nothing -> return []
+    body <- statement b
+    return $ initial ++ [Label start] ++ cond ++ body ++ [Label contLbl] 
+        ++ post ++ [Jump start, Label brkLbl]
 statement P.Null = return []
+
+initFor :: P.ForInit -> Counter [Instruction]
+initFor (P.InitExpr (Just e)) = snd <$> expr e
+initFor (P.InitExpr Nothing) = return []
+initFor (P.InitDecl d) = blockItem (P.D d)
 
 operand :: P.UnaryOp -> UnaryOp
 operand P.Complement = Complement
