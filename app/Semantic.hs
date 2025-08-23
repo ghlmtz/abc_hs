@@ -70,9 +70,7 @@ gotoStmt (Goto name) = do
         Nothing -> writeError "Goto missing label!"
 gotoStmt (If e1 s1 s2) = do
     s1' <- gotoStmt s1
-    s2' <- case s2 of
-            Just e -> Just <$> gotoStmt e
-            Nothing -> return Nothing
+    s2' <- resolveOpt s2 gotoStmt
     return $ If e1 s1' s2'
 gotoStmt s = return s
 
@@ -82,23 +80,42 @@ resolveProg (Program f) = Program <$> resolveFunc f
 resolveFunc :: Function -> SemanticMonad Function
 resolveFunc (Function name (Block items)) = Function name <$> resolveBlock items
 
-resolveBlock :: [BlockItem] -> SemanticMonad Block
-resolveBlock items = do
-    s <- gets blockVars
-    items' <- local (foo s) $ do
+descend :: (a -> SemanticMonad a) -> a -> SemanticMonad a
+descend f arg = do
+    s <- gets (remap . blockVars)
+    local s $ do
         modify $ \x -> x { blockVars = M.empty}
-        i <- mapM resolveItem items
+        r <- f arg
         oldVars <- asks variableMap
         modify $ \x -> x { blockVars = oldVars }
-        return i
-    return $ Block items'
+        return r
 
-foo :: VarMap -> LocalVars -> LocalVars
-foo s r = r { variableMap = M.union s (variableMap r) }
+resolveBlock :: [BlockItem] -> SemanticMonad Block
+resolveBlock items = Block <$> descend (mapM resolveItem) items
+
+remap :: VarMap -> LocalVars -> LocalVars
+remap s r = r { variableMap = M.union s (variableMap r) }
 
 resolveItem :: BlockItem -> SemanticMonad BlockItem
 resolveItem (S stmt) = S <$> resolveStmt stmt
 resolveItem (D decl) = D <$> resolveDecl decl
+
+resolveOpt :: Monad f => Maybe a -> (a -> f a) -> f (Maybe a)
+resolveOpt (Just e) f = Just <$> f e
+resolveOpt Nothing _ = return Nothing
+
+resolveForInit :: ForInit -> SemanticMonad ForInit
+resolveForInit (InitExpr e) = InitExpr <$> resolveOpt e resolveExpr
+resolveForInit (InitDecl d) = InitDecl <$> resolveDecl d
+
+resolveFor :: Statement -> SemanticMonad Statement
+resolveFor (For initial cond post body name) = do
+    i <- resolveForInit initial
+    c <- resolveOpt cond resolveExpr
+    p <- resolveOpt post resolveExpr
+    b <- resolveStmt body
+    return $ For i c p b name
+resolveFor _ = error "Shouldn't happen"
 
 resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
@@ -106,10 +123,17 @@ resolveStmt (Expression e) = Expression <$> resolveExpr e
 resolveStmt (If e1 e2 e3) = do
     r1 <- resolveExpr e1
     r2 <- resolveStmt e2
-    r3 <- case e3 of
-            Just e -> Just <$> resolveStmt e
-            Nothing -> return Nothing
+    r3 <- resolveOpt e3 resolveStmt
     return $ If r1 r2 r3
+resolveStmt (While e s name) = do
+    e1 <- resolveExpr e
+    s1 <- resolveStmt s
+    return $ While e1 s1 name
+resolveStmt (DoWhile s e name) = do
+    e1 <- resolveExpr e
+    s1 <- resolveStmt s
+    return $ DoWhile s1 e1 name
+resolveStmt op@(For {}) = descend resolveFor op
 resolveStmt (Goto label) = return $ Goto label
 resolveStmt (Labelled name stmt) = do
     m <- gets labels
@@ -120,7 +144,7 @@ resolveStmt (Labelled name stmt) = do
         modify $ \x -> x {labels = (name, unique) : labels x}
     return $ Labelled unique s1
 resolveStmt (Compound (Block items)) = Compound <$> resolveBlock items
-resolveStmt Null = return Null
+resolveStmt op = return op
 
 writeError :: String -> SemanticMonad a
 writeError s = do
