@@ -73,6 +73,7 @@ statement (P.If e1 e2 e3) = do
                     ++ [Jump end, Label elseLbl] ++ elseBlock
             Nothing -> return $ JZero cond end : ifBlock
     return $ is ++ is' ++ [Label end]
+statement (P.Compound (P.Block items)) = concat <$> mapM blockItem items
 statement P.Null = return []
 
 operand :: P.UnaryOp -> UnaryOp

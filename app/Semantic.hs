@@ -5,48 +5,62 @@ module Semantic
 
 import Parse
 
+import Control.Monad.Reader
 import Control.Monad.State
+import qualified Data.Map as M
 import Data.Maybe (isJust)
 
+type SemanticMonad m = ReaderT LocalVars (State SemanticState) m
+type VarMap = M.Map String String
+
 data SemanticState = SemanticState {
-  variableMap :: [(String, String)]
+  blockVars :: VarMap
 , labels :: [(String, String)]
 , nameCount  :: Int
 , err :: Maybe String
 }
 
+data LocalVars = LocalVars {
+    variableMap :: VarMap
+}
+
+localVars :: LocalVars
+localVars = LocalVars {
+    variableMap = M.empty
+}
+
 initState :: SemanticState
 initState = SemanticState {
-      variableMap = []
+      blockVars = M.empty
     , labels = []
     , nameCount = 0
     , err = Nothing}
 
 resolve :: Program -> Either String Program
 resolve prog = do
-    let result = runState (resolveProg prog) initState 
+    let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of
         Just e -> Left e
         Nothing -> resolveGoto result
 
 resolveGoto :: (Program, SemanticState) -> Either String Program
 resolveGoto (prog, s) = do
-    let (prog', s') = runState (gotoProg prog) s 
+    let (prog', s') = runState (runReaderT (gotoProg prog) localVars) s
     case err s' of
         Just e -> Left e
         Nothing -> Right prog'
 
-gotoProg :: Program -> State SemanticState Program
+gotoProg :: Program -> SemanticMonad Program
 gotoProg (Program f) = Program <$> gotoFunc f
 
-gotoFunc :: Function -> State SemanticState Function
+gotoFunc :: Function -> SemanticMonad Function
 gotoFunc (Function name (Block items)) = Function name . Block <$> mapM gotoItem items
 
-gotoItem :: BlockItem -> State SemanticState BlockItem
+gotoItem :: BlockItem -> SemanticMonad BlockItem
 gotoItem (S stmt) = S <$> gotoStmt stmt
 gotoItem (D decl) = return $ D decl
 
-gotoStmt :: Statement -> State SemanticState Statement
+gotoStmt :: Statement -> SemanticMonad Statement
 gotoStmt (Labelled name stmt) = Labelled name <$> gotoStmt stmt
 gotoStmt (Goto name) = do
     m <- gets labels
@@ -61,17 +75,31 @@ gotoStmt (If e1 s1 s2) = do
     return $ If e1 s1' s2'
 gotoStmt s = return s
 
-resolveProg :: Program -> State SemanticState Program
+resolveProg :: Program -> SemanticMonad Program
 resolveProg (Program f) = Program <$> resolveFunc f
 
-resolveFunc :: Function -> State SemanticState Function
-resolveFunc (Function name (Block items)) = Function name . Block <$> mapM resolveItem items
+resolveFunc :: Function -> SemanticMonad Function
+resolveFunc (Function name (Block items)) = Function name <$> resolveBlock items
 
-resolveItem :: BlockItem -> State SemanticState BlockItem
+resolveBlock :: [BlockItem] -> SemanticMonad Block
+resolveBlock items = do
+    s <- gets blockVars
+    items' <- local (foo s) $ do
+        modify $ \x -> x { blockVars = M.empty}
+        i <- mapM resolveItem items
+        oldVars <- asks variableMap
+        modify $ \x -> x { blockVars = oldVars }
+        return i
+    return $ Block items'
+
+foo :: VarMap -> LocalVars -> LocalVars
+foo s r = r { variableMap = M.union s (variableMap r) }
+
+resolveItem :: BlockItem -> SemanticMonad BlockItem
 resolveItem (S stmt) = S <$> resolveStmt stmt
 resolveItem (D decl) = D <$> resolveDecl decl
 
-resolveStmt :: Statement -> State SemanticState Statement
+resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
 resolveStmt (Expression e) = Expression <$> resolveExpr e
 resolveStmt (If e1 e2 e3) = do
@@ -90,26 +118,27 @@ resolveStmt (Labelled name stmt) = do
     else
         modify $ \x -> x {labels = (name, unique) : labels x}
     return $ Labelled unique s1
+resolveStmt (Compound (Block items)) = Compound <$> resolveBlock items
 resolveStmt Null = return Null
 
-writeError :: String -> State SemanticState a
+writeError :: String -> SemanticMonad a
 writeError s = do
     modify (\x -> x { err = Just s}) *> error s
 
-resolveDecl :: Declaration -> State SemanticState Declaration
+resolveDecl :: Declaration -> SemanticMonad Declaration
 resolveDecl (Declaration name i) = do
-    m <- gets variableMap
+    m <- gets blockVars
     unique <- uniqueVar
-    if isJust (lookup name m) then writeError "Duplicate variable declaration!"
+    if isJust (M.lookup name m) then writeError "Duplicate variable declaration!"
     else
-        modify $ \x -> x {variableMap = (name, unique) : variableMap x}
+        modify $ \x -> x {blockVars = M.insert name unique $ blockVars x}
     case i of
         Just x -> do
             e <- resolveExpr x
             return $ Declaration unique (Just e)
         Nothing -> return $ Declaration unique i
 
-resolveExpr :: Expr -> State SemanticState Expr
+resolveExpr :: Expr -> SemanticMonad Expr
 resolveExpr (Assignment (Var s) r) = do
     Assignment <$> resolveExpr (Var s) <*> resolveExpr r
 resolveExpr (Assignment _ _) = writeError "Invalid lvalue!"
@@ -117,10 +146,13 @@ resolveExpr (CompoundAssignment op (Var s) r) = do
     CompoundAssignment op <$> resolveExpr (Var s) <*> resolveExpr r
 resolveExpr (CompoundAssignment {}) = writeError "Invalid lvalue!"
 resolveExpr (Var v) = do
-    m <- gets variableMap
-    case lookup v m of
+    gm <- gets blockVars
+    lm <- asks variableMap
+    case M.lookup v gm of
         Just x -> return $ Var x
-        Nothing -> writeError "Undeclared variable!"
+        Nothing -> case M.lookup v lm of
+                    Just x -> return $ Var x
+                    Nothing -> writeError $ "Undeclared variable: " ++ show v
 resolveExpr (Unary PreDec (Var s)) = Unary PreDec <$> resolveExpr (Var s)
 resolveExpr (Unary PreInc (Var s)) = Unary PreInc <$> resolveExpr (Var s)
 resolveExpr (Unary PreDec _) = writeError "Invalid lvalue!"
@@ -134,14 +166,14 @@ resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
 resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
 
-uniqueName :: String -> State SemanticState String
+uniqueName :: String -> SemanticMonad String
 uniqueName s = do
     ct <- gets (show . nameCount)
     modify $ \x -> x {nameCount = 1 + nameCount x}
     return $ s ++ ct
 
-uniqueVar :: State SemanticState String
+uniqueVar :: SemanticMonad String
 uniqueVar = uniqueName "var."
 
-uniqueLabel :: State SemanticState String
+uniqueLabel :: SemanticMonad String
 uniqueLabel = uniqueName "lbl_"
