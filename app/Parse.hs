@@ -214,10 +214,12 @@ ternary = do
 term :: TokenParser Expr
 term = do
     t <- term'
-    un <- optional unaryPostfix
+    un <- optional (many unaryPostfix)
     case un of
-        Just post -> return $ Unary post t
-        Nothing -> return t
+        Just post -> return $ applyUnary post t
+        Nothing   -> return t
+  where applyUnary [] t = t
+        applyUnary (p:ps) t = applyUnary ps (Unary p t)
 
 term' :: TokenParser Expr
 term' = constant
