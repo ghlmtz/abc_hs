@@ -11,6 +11,7 @@ module Tacky
 import qualified Parse as P
 
 import Control.Monad.State
+import Data.Maybe (catMaybes)
 
 type Counter = State (Int, Int)
 
@@ -91,7 +92,7 @@ statement (P.While e s name) = do
         ++ [Jump contLbl, Label brkLbl]
 statement (P.For i c p b name) = do
     let contLbl = "continue_" ++ name
-    let brkLbl = "break_" ++ name 
+    let brkLbl = "break_" ++ name
     start <- tmpLabel "start"
     initial <- initFor i
     cond <- case c of
@@ -103,9 +104,31 @@ statement (P.For i c p b name) = do
         Just e -> snd <$> expr e
         Nothing -> return []
     body <- statement b
-    return $ initial ++ [Label start] ++ cond ++ body ++ [Label contLbl] 
+    return $ initial ++ [Label start] ++ cond ++ body ++ [Label contLbl]
         ++ post ++ [Jump start, Label brkLbl]
+statement (P.Switch e s name cases) = switchStmt e s name cases
 statement P.Null = return []
+statement (P.Case _ _) = error "Should not occur"
+statement (P.Default _) = error "Should not occur"
+
+switchStmt :: P.Expr -> P.Statement -> [Char] -> [Maybe Integer] -> Counter [Instruction]
+switchStmt e s name cases = do
+    let brkLbl = "break_" ++ name
+    (cond, is) <- expr e
+    body <- statement s
+    casesIs <- mapM (makeCase cond name) (catMaybes cases)
+    let pre = if Nothing `notElem` cases
+        then [Jump brkLbl]
+        else [Jump (name ++ ".default")]
+    return $ is ++ concat casesIs ++ pre ++ body ++ [Label brkLbl]
+
+makeCase :: Value -> [Char] -> Integer -> Counter [Instruction]
+makeCase cond name n = do
+    end <- tmpLabel "end"
+    dst <- Var <$> tmpVar
+    let is = JZero dst end : [Jump lblName]
+    return $ [Binary P.Equal cond (Constant n) dst] ++ is ++ [Label end]
+  where lblName = name ++ "." ++ show n
 
 initFor :: P.ForInit -> Counter [Instruction]
 initFor (P.InitExpr (Just e)) = snd <$> expr e

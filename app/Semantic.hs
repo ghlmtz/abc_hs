@@ -18,13 +18,15 @@ data SemanticState = SemanticState {
 , labels :: [(String, String)]
 , nameCount  :: Int
 , err :: Maybe String
+, switchLabels :: [Maybe Integer]
 }
 
 data LocalVars = LocalVars {
     variableMap :: VarMap,
     breakLabel :: Maybe String,
     continueLabel :: Maybe String,
-    switchLabel :: Maybe String
+    switchLabel :: Maybe String,
+    localSwitch :: [Maybe Integer]
 }
 
 localVars :: LocalVars
@@ -33,12 +35,14 @@ localVars = LocalVars {
     , breakLabel = Nothing
     , continueLabel = Nothing
     , switchLabel = Nothing
+    , localSwitch = []
 }
 
 initState :: SemanticState
 initState = SemanticState {
       blockVars = M.empty
     , labels = []
+    , switchLabels = []
     , nameCount = 0
     , err = Nothing}
 
@@ -78,11 +82,20 @@ gotoStmt (If e1 s1 s2) = do
     s1' <- gotoStmt s1
     s2' <- resolveOpt s2 gotoStmt
     return $ If e1 s1' s2'
-gotoStmt (Switch e s n) = do
+gotoStmt (Switch e s n c) = do
     s' <- gotoStmt s
-    return $ Switch e s' n
+    return $ Switch e s' n c
 gotoStmt (Case e s) = Case e <$> gotoStmt s
 gotoStmt (Default s) = Default <$> gotoStmt s
+gotoStmt (DoWhile s e n) = do
+    s' <- gotoStmt s
+    return $ DoWhile s' e n
+gotoStmt (While e s n) = do
+    s' <- gotoStmt s
+    return $ While e s' n
+gotoStmt (For i e1 e2 s n) = do
+    s' <- gotoStmt s
+    return $ For i e1 e2 s' n
 gotoStmt s = return s
 
 resolveProg :: Program -> SemanticMonad Program
@@ -131,8 +144,12 @@ resolveFor _ = error "Shouldn't happen"
 newLoopLabel :: String -> LocalVars -> LocalVars
 newLoopLabel new l = l { breakLabel = Just new, continueLabel = Just new }
 
-newSwitchLabel :: String -> LocalVars -> LocalVars
-newSwitchLabel new l = l { breakLabel = Just new, switchLabel = Just new}
+newSwitchLabel :: String -> [Maybe Integer] -> LocalVars -> LocalVars
+newSwitchLabel new lbls l = l { breakLabel = Just new, switchLabel = Just new, localSwitch = lbls}
+
+evalConstant :: Expr -> Integer
+evalConstant (Int i) = i
+evalConstant _ = error "Cannot parse complicated expressions yet"
 
 resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
@@ -159,23 +176,39 @@ resolveStmt (Case e s) = do
     e1 <- resolveExpr e
     s1 <- resolveStmt s
     case l of 
-        Just _ -> return $ Case e1 s1
+        Just l' -> do
+            let n = evalConstant e1
+            lbls <- gets switchLabels
+            if Just n `elem` lbls then writeError "Duplicate case!"
+            else do
+                modify $ \x -> x { switchLabels = Just n : switchLabels x}
+                return $ Labelled (l' ++ "." ++ show n) s1
         Nothing   -> writeError "Not in switch!"
 resolveStmt (Default s) = do
     l <- asks switchLabel
     s1 <- resolveStmt s
     case l of 
-        Just _ -> return $ Default s1
+        Just l' -> do
+            lbls <- gets switchLabels
+            if Nothing `elem` lbls then writeError "Duplicate default!"
+            else do
+                modify $ \x -> x { switchLabels = Nothing : switchLabels x}
+                return $ Labelled (l' ++ ".default") s1
         Nothing   -> writeError "Not in switch!"
 resolveStmt (For i c p b _) = do
     label <- uniqueLabel
     local (newLoopLabel label) $ descend resolveFor (For i c p b label)
-resolveStmt (Switch e s _) = do
+resolveStmt (Switch e s _ _) = do
     label <- uniqueLabel
-    local (newSwitchLabel label) $ do
+    lbls <- gets switchLabels
+    local (newSwitchLabel label lbls) $ do
+        modify $ \x -> x { switchLabels = []}
         e1 <- resolveExpr e
         s1 <- resolveStmt s
-        return $ Switch e1 s1 label
+        slbl <- gets switchLabels
+        oldLabels <- asks localSwitch
+        modify $ \x -> x { switchLabels = oldLabels }
+        return $ Switch e1 s1 label slbl
 resolveStmt (Break _) = do
     l <- asks breakLabel
     case l of

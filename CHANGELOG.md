@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.8.0.0 -- 2025-08-23
+
+* Chapter 8 complete, I added switch but I noticed there's no support for more advanced expression in cases (like 2 + 3, 1 << 2, etc.) in the unit tests. Looking through the book they don't seem to come in later either, I guess this is something you'd have to introduce on your own.
+
 ## 0.7.0.0 -- 2025-08-23
 
 * Chapter 7 done. I have a Reader + State in the semantic analysis for variables, probably a cleaner way of doing that. Also converted variable mappings to Data.Map.

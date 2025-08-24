@@ -49,7 +49,7 @@ data Statement = Return Expr
                | Goto String
                | Compound Block
                | If Expr Statement (Maybe Statement)
-               | Switch Expr Statement String
+               | Switch Expr Statement String [Maybe Integer]
                | Labelled String Statement
                | Case Expr Statement
                | Default Statement
@@ -130,7 +130,7 @@ switchStmt :: TokenParser Statement
 switchStmt = do
     e <- isToken L.Switch *> isToken L.LeftParen *> expr <* isToken L.RightParen
     s <- statement
-    return $ Switch e s ""
+    return $ Switch e s "" []
 
 caseStmt :: TokenParser Statement
 caseStmt = do
