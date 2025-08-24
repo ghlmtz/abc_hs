@@ -61,10 +61,10 @@ resolveGoto (prog, s) = do
         Nothing -> Right prog'
 
 gotoProg :: Program -> SemanticMonad Program
-gotoProg (Program f) = Program <$> gotoFunc f
+gotoProg (Program f) = Program <$> mapM gotoFunc f
 
 gotoFunc :: Function -> SemanticMonad Function
-gotoFunc (Function name (Block items)) = Function name . Block <$> mapM gotoItem items
+gotoFunc (Function name params (Just (Block items))) = Function name params . Just . Block <$> mapM gotoItem items
 
 gotoItem :: BlockItem -> SemanticMonad BlockItem
 gotoItem (S stmt) = S <$> gotoStmt stmt
@@ -99,10 +99,10 @@ gotoStmt (For i e1 e2 s n) = do
 gotoStmt s = return s
 
 resolveProg :: Program -> SemanticMonad Program
-resolveProg (Program f) = Program <$> resolveFunc f
+resolveProg (Program f) = Program <$> mapM resolveFunc f
 
 resolveFunc :: Function -> SemanticMonad Function
-resolveFunc (Function name (Block items)) = Function name <$> resolveBlock items
+resolveFunc (Function name params (Just (Block items))) = Function name params . Just <$> resolveBlock items
 
 descend :: (a -> SemanticMonad a) -> a -> SemanticMonad a
 descend f arg = do
@@ -175,7 +175,7 @@ resolveStmt (Case e s) = do
     l <- asks switchLabel
     e1 <- resolveExpr e
     s1 <- resolveStmt s
-    case l of 
+    case l of
         Just l' -> do
             let n = evalConstant e1
             lbls <- gets switchLabels
@@ -187,7 +187,7 @@ resolveStmt (Case e s) = do
 resolveStmt (Default s) = do
     l <- asks switchLabel
     s1 <- resolveStmt s
-    case l of 
+    case l of
         Just l' -> do
             lbls <- gets switchLabels
             if Nothing `elem` lbls then writeError "Duplicate default!"
@@ -235,7 +235,7 @@ writeError s = do
     modify (\x -> x { err = Just s}) *> error s
 
 resolveDecl :: Declaration -> SemanticMonad Declaration
-resolveDecl (Declaration name i) = do
+resolveDecl (VarDecl (name, i)) = do
     m <- gets blockVars
     unique <- uniqueVar
     if isJust (M.lookup name m) then writeError "Duplicate variable declaration!"
@@ -244,8 +244,8 @@ resolveDecl (Declaration name i) = do
     case i of
         Just x -> do
             e <- resolveExpr x
-            return $ Declaration unique (Just e)
-        Nothing -> return $ Declaration unique i
+            return $ VarDecl (unique, Just e)
+        Nothing -> return $ VarDecl (unique, i)
 
 resolveExpr :: Expr -> SemanticMonad Expr
 resolveExpr (Assignment (Var s) r) = do

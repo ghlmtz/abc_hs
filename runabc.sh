@@ -30,9 +30,15 @@ else
     if [[ "$*" == *"-S"* ]]; then
         opts="-S"
     fi
+
     gcc -E -P "$filepath" -o "$filenoext.i" && ~/.cabal/bin/abc "$filenoext.i" $opts
     exitstatus=$?
     rm "$filenoext.i"
+    if [ $exitstatus -eq 0 ] && [[ "$*" == *"-c"* ]]; then
+        gcc -c "$filenoext.s" -o "$filenoext.o"
+        rm "$filenoext.s"
+        opts="--"
+    fi
     if [ $exitstatus -eq 0 ] && [[ $opts == "" ]]; then
         gcc "$filenoext.s" -o "$filenoext"
         rm "$filenoext.s"

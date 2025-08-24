@@ -32,7 +32,7 @@ data CToken = Identifier String
            | LeftShiftEqual | RightShiftEqual
            | If | Else | Question | Colon | Goto
            | Break | Continue | Do | For | While
-           | Case | Default | Switch
+           | Case | Default | Switch | Comma
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -90,7 +90,8 @@ singleChars = [
     ('>', GreaterThan),
     ('=', Equal),
     ('?', Question),
-    (':', Colon)]
+    (':', Colon),
+    (',', Comma)]
 
 singleChar :: Char -> CToken -> Parser CToken
 singleChar c t = char c >> pure t

@@ -21,7 +21,7 @@ import Control.Monad.Combinators.Expr
 import Data.Void (Void)
 
 type TokenParser = Parsec Void [CToken]
-type MayError = Either String 
+type MayError = Either String
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
     deriving (Show)
@@ -30,15 +30,17 @@ data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
               | LogAnd | LogOr | Equal | NotEqual | LessThan | LessEqual
               | GreaterThan | GreaterEqual
     deriving (Show, Eq)
-data Expr = Int Integer 
+data Expr = Int Integer
            | Unary UnaryOp Expr
            | Binary BinaryOp Expr Expr
            | Var String
            | Assignment Expr Expr
            | CompoundAssignment BinaryOp Expr Expr
            | Conditional Expr Expr Expr
+           | FunctionCall String [Expr]
     deriving (Show)
-data Declaration = Declaration String (Maybe Expr)
+type VarDecl = (String, Maybe Expr)
+data Declaration = FuncDecl Function | VarDecl VarDecl
     deriving (Show)
 newtype Block = Block [BlockItem]
     deriving (Show)
@@ -62,9 +64,9 @@ data Statement = Return Expr
     deriving (Show)
 data BlockItem = S Statement | D Declaration
     deriving (Show)
-data Function = Function String Block
+data Function = Function String [String] (Maybe Block)
     deriving (Show)
-newtype Program = Program Function
+newtype Program = Program [Function]
     deriving (Show)
 
 parser :: [CToken] -> MayError Program
@@ -84,13 +86,21 @@ isIdent (L.Identifier _) = True
 isIdent _ = False
 
 program :: TokenParser Program
-program = Program <$> function
+program = Program <$> many function
 
 function :: TokenParser Function
 function = do
     name <- isToken L.Int *> satisfy isIdent
-    body <- isToken L.LeftParen *> isToken L.Void *> isToken L.RightParen *> block
-    return $ Function (getIdent name) body
+    ps <- isToken L.LeftParen *> params <* isToken L.RightParen
+    body <- (Just <$> block) <|> (isToken L.Semicolon >> return Nothing)
+    return $ Function (getIdent name) ps body
+
+params :: TokenParser [String]
+params = (isToken L.Void >> return [])
+     <|> args
+  where args = do
+         names <- sepBy1 (isToken L.Int *> satisfy isIdent) (isToken L.Comma)
+         return $ map getIdent names
 
 blockItem :: TokenParser BlockItem
 blockItem = D <$> declaration <|> S <$> statement
@@ -101,18 +111,21 @@ block = do
     return $ Block items
 
 declaration :: TokenParser Declaration
-declaration = do
+declaration = try variable <|> FuncDecl <$> function
+
+variable :: TokenParser Declaration
+variable = do
     name <- isToken L.Int *> satisfy isIdent
     assign <- optional (isToken L.Equal *> expr)
     _ <- isToken L.Semicolon
-    return $ Declaration (getIdent name) assign
+    return $ VarDecl (getIdent name, assign)
 
 statement :: TokenParser Statement
-statement = try labelStmt 
-        <|> Compound <$> block 
-        <|> ret <|> ifStmt <|> goto 
-        <|> Expression <$> expr <* isToken L.Semicolon 
-        <|> semicolon <|> breakStmt <|> continueStmt 
+statement = try labelStmt
+        <|> Compound <$> block
+        <|> ret <|> ifStmt <|> goto
+        <|> Expression <$> expr <* isToken L.Semicolon
+        <|> semicolon <|> breakStmt <|> continueStmt
         <|> whileStmt <|> doWhileStmt <|> forStmt
         <|> switchStmt <|> caseStmt <|> defaultStmt
     where semicolon = do
@@ -135,8 +148,7 @@ switchStmt = do
 caseStmt :: TokenParser Statement
 caseStmt = do
     e <- isToken L.Case *> ternary <* isToken L.Colon
-    s <- statement
-    return $ Case e s
+    Case e <$> statement
 
 defaultStmt :: TokenParser Statement
 defaultStmt = do
@@ -174,7 +186,7 @@ doWhileStmt = do
 
 forInit :: TokenParser ForInit
 forInit = do
-    InitDecl <$> declaration
+    InitDecl <$> variable
     <|> do
         e <- optional expr <* isToken L.Semicolon
         return $ InitExpr e
@@ -186,7 +198,7 @@ forStmt = do
     e2 <- optional expr <* isToken L.RightParen
     s <- statement
     return $ For i e1 e2 s ""
-  
+
 expr :: TokenParser Expr
 expr = makeExprParser ternary assignment
 
@@ -214,7 +226,12 @@ term' = constant
    <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
 
 var :: TokenParser Expr
-var = Var . getIdent <$> satisfy isIdent
+var = do
+    ident <- satisfy isIdent
+    call <- optional (isToken L.LeftParen *> sepBy expr (isToken L.Comma) <* isToken L.RightParen) 
+    return $ case call of
+        Just calls -> FunctionCall (getIdent ident) calls
+        Nothing -> Var (getIdent ident)
 
 constant :: TokenParser Expr
 constant = do

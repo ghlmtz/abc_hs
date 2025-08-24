@@ -42,18 +42,18 @@ tack :: P.Program -> Either String Program
 tack prog = Right $ evalState (scan prog) (0, 0)
 
 scan :: P.Program -> Counter Program
-scan (P.Program f) = Program <$> funcDef f
+scan (P.Program f) = Program <$> funcDef (head f)
 
 funcDef :: P.Function -> Counter FuncDef
-funcDef (P.Function name (P.Block items)) =
+funcDef (P.Function name params (Just (P.Block items))) =
     FuncDef name . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
 
 blockItem :: P.BlockItem -> Counter [Instruction]
 blockItem (P.S s) = statement s
-blockItem (P.D (P.Declaration name (Just v))) = do
+blockItem (P.D (P.VarDecl (name, Just v))) = do
     foo <- expr $ P.Assignment (P.Var name) v
     return $ snd foo
-blockItem (P.D (P.Declaration _ Nothing)) = return []
+blockItem (P.D (P.VarDecl (_, Nothing))) = return []
 
 statement :: P.Statement -> Counter [Instruction]
 statement (P.Return e) = do
