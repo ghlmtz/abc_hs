@@ -4,6 +4,7 @@ module Semantic
 ) where
 
 import Parse
+import TypeCheck
 
 import Control.Monad.Reader
 import Control.Monad.State
@@ -58,7 +59,7 @@ resolveGoto (prog, s) = do
     let (prog', s') = runState (runReaderT (gotoProg prog) localVars) s
     case err s' of
         Just e -> Left e
-        Nothing -> Right prog'
+        Nothing -> resolveType prog'
 
 gotoProg :: Program -> SemanticMonad Program
 gotoProg (Program f) = Program <$> mapM gotoFunc f
