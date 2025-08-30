@@ -52,17 +52,7 @@ resolve prog = do
     let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of
         Just e -> Left e
-        Nothing -> resolveGoto result
-
-resolveGoto :: (Program, SemanticState) -> Either String Program
-resolveGoto (prog, s) = do
-    let (prog', s') = runState (runReaderT (gotoProg prog) localVars) s
-    case err s' of
-        Just e -> Left e
-        Nothing -> resolveType prog'
-
-gotoProg :: Program -> SemanticMonad Program
-gotoProg (Program f) = Program <$> mapM gotoFunc f
+        Nothing -> resolveType $ fst result
 
 gotoFunc :: Function -> SemanticMonad Function
 gotoFunc (Function name params (Just (Block items))) = Function name params . Just . Block <$> mapM gotoItem items
@@ -125,7 +115,9 @@ resolveFunc (Function name params blk) = do
         oldVars <- asks identifierMap
         modify $ \x -> x { blockVars = oldVars }
         return (params', blk')
-    return $ Function name params' blk'
+    g <- gotoFunc $ Function name params' blk'
+    modify $ \x -> x { labels = [] }
+    return g
 
 descend :: (a -> SemanticMonad a) -> a -> SemanticMonad a
 descend f arg = do
