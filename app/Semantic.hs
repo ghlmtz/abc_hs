@@ -11,10 +11,10 @@ import qualified Data.Map as M
 import Data.Maybe (isJust)
 
 type SemanticMonad m = ReaderT LocalVars (State SemanticState) m
-type VarMap = M.Map String String
+type IdentMap = M.Map String (String, Bool)
 
 data SemanticState = SemanticState {
-  blockVars :: VarMap
+  blockVars :: IdentMap
 , labels :: [(String, String)]
 , nameCount  :: Int
 , err :: Maybe String
@@ -22,7 +22,7 @@ data SemanticState = SemanticState {
 }
 
 data LocalVars = LocalVars {
-    variableMap :: VarMap,
+    identifierMap :: IdentMap,
     breakLabel :: Maybe String,
     continueLabel :: Maybe String,
     switchLabel :: Maybe String,
@@ -31,7 +31,7 @@ data LocalVars = LocalVars {
 
 localVars :: LocalVars
 localVars = LocalVars {
-      variableMap = M.empty
+      identifierMap = M.empty
     , breakLabel = Nothing
     , continueLabel = Nothing
     , switchLabel = Nothing
@@ -65,6 +65,7 @@ gotoProg (Program f) = Program <$> mapM gotoFunc f
 
 gotoFunc :: Function -> SemanticMonad Function
 gotoFunc (Function name params (Just (Block items))) = Function name params . Just . Block <$> mapM gotoItem items
+gotoFunc nothingFun = return nothingFun
 
 gotoItem :: BlockItem -> SemanticMonad BlockItem
 gotoItem (S stmt) = S <$> gotoStmt stmt
@@ -102,7 +103,28 @@ resolveProg :: Program -> SemanticMonad Program
 resolveProg (Program f) = Program <$> mapM resolveFunc f
 
 resolveFunc :: Function -> SemanticMonad Function
-resolveFunc (Function name params (Just (Block items))) = Function name params . Just <$> resolveBlock items
+resolveFunc (Function name params blk) = do
+    gm <- gets blockVars
+    lm <- asks identifierMap
+    case M.lookup name gm of 
+        Just x -> if snd x then return () else writeError "Duplicate declaration"
+        Nothing -> case M.lookup name lm of
+                    Just _ -> return ()
+                    Nothing -> return ()
+    modify $ \x -> x { blockVars = M.insert name (name, True) gm }
+
+    s <- gets (remap . blockVars)
+    (params', blk') <- local s $ do
+        modify $ \x -> x { blockVars = M.empty}
+        mapM_ (resolveDecl . VarDecl . \x -> (x, Nothing)) params
+        params' <- gets (map fst . M.elems . blockVars)
+        blk' <- case blk of 
+                Just (Block bs) -> Just . Block <$> mapM resolveItem bs
+                Nothing -> return Nothing
+        oldVars <- asks identifierMap
+        modify $ \x -> x { blockVars = oldVars }
+        return (params', blk')
+    return $ Function name params' blk'
 
 descend :: (a -> SemanticMonad a) -> a -> SemanticMonad a
 descend f arg = do
@@ -110,15 +132,15 @@ descend f arg = do
     local s $ do
         modify $ \x -> x { blockVars = M.empty}
         r <- f arg
-        oldVars <- asks variableMap
+        oldVars <- asks identifierMap
         modify $ \x -> x { blockVars = oldVars }
         return r
 
 resolveBlock :: [BlockItem] -> SemanticMonad Block
 resolveBlock items = Block <$> descend (mapM resolveItem) items
 
-remap :: VarMap -> LocalVars -> LocalVars
-remap s r = r { variableMap = M.union s (variableMap r) }
+remap :: IdentMap -> LocalVars -> LocalVars
+remap s r = r { identifierMap = M.union s (identifierMap r) }
 
 resolveItem :: BlockItem -> SemanticMonad BlockItem
 resolveItem (S stmt) = S <$> resolveStmt stmt
@@ -240,12 +262,16 @@ resolveDecl (VarDecl (name, i)) = do
     unique <- uniqueVar
     if isJust (M.lookup name m) then writeError "Duplicate variable declaration!"
     else
-        modify $ \x -> x {blockVars = M.insert name unique $ blockVars x}
+        modify $ \x -> x {blockVars = M.insert name (unique, False) $ blockVars x}
     case i of
         Just x -> do
             e <- resolveExpr x
             return $ VarDecl (unique, Just e)
         Nothing -> return $ VarDecl (unique, i)
+resolveDecl (FuncDecl fun@(Function _ _ body)) = do
+    if isJust body 
+        then writeError "Function defined not at global scope!"
+        else FuncDecl <$> resolveFunc fun
 
 resolveExpr :: Expr -> SemanticMonad Expr
 resolveExpr (Assignment (Var s) r) = do
@@ -256,11 +282,11 @@ resolveExpr (CompoundAssignment op (Var s) r) = do
 resolveExpr (CompoundAssignment {}) = writeError "Invalid lvalue!"
 resolveExpr (Var v) = do
     gm <- gets blockVars
-    lm <- asks variableMap
+    lm <- asks identifierMap
     case M.lookup v gm of
-        Just x -> return $ Var x
+        Just x -> return $ Var (fst x)
         Nothing -> case M.lookup v lm of
-                    Just x -> return $ Var x
+                    Just x -> return $ Var (fst x)
                     Nothing -> writeError $ "Undeclared variable: " ++ show v
 resolveExpr (Unary PreDec (Var s)) = Unary PreDec <$> resolveExpr (Var s)
 resolveExpr (Unary PreInc (Var s)) = Unary PreInc <$> resolveExpr (Var s)
@@ -274,6 +300,14 @@ resolveExpr (Unary op e) = Unary op <$> resolveExpr e
 resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
 resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
+resolveExpr (FunctionCall name args) = do
+    gm <- gets blockVars
+    lm <- asks identifierMap
+    case M.lookup name gm of
+        Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
+        Nothing -> case M.lookup name lm of
+                    Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
+                    Nothing -> writeError $ "Undeclared function: " ++ show name
 
 uniqueName :: String -> SemanticMonad String
 uniqueName s = do
