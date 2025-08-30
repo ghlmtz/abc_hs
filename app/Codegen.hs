@@ -10,7 +10,7 @@ import Control.Monad.State
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
 
-newtype Program = Program FuncDef
+newtype Program = Program [FuncDef]
 data FuncDef = FuncDef String [Instruction]
 data Instruction = Mov Operand Operand
                  | MovB Operand Operand
@@ -102,10 +102,10 @@ genCode :: T.Program -> MayError Program
 genCode prog = pure $ evalState (pass1 prog) []
 
 pass1 :: T.Program -> VarList Program
-pass1 (T.Program f) = Program <$> funcDef f
+pass1 (T.Program f) = Program <$> mapM funcDef f
 
 funcDef :: T.FuncDef -> VarList FuncDef
-funcDef (T.FuncDef name stmt) = do
+funcDef (T.FuncDef name params stmt) = do
     mapStmt <- mapM statement stmt
     len <- gets length
     return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx len) : concat mapStmt)

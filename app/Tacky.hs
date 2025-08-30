@@ -15,9 +15,9 @@ import Data.Maybe (catMaybes)
 
 type Counter = State (Int, Int)
 
-newtype Program = Program FuncDef
+newtype Program = Program [FuncDef]
     deriving (Show)
-data FuncDef = FuncDef String [Instruction]
+data FuncDef = FuncDef String [String] [Instruction]
     deriving (Show)
 data Instruction = Return Value
                  | Unary UnaryOp Value Value
@@ -27,6 +27,7 @@ data Instruction = Return Value
                  | JZero Value String
                  | JNZero Value String
                  | Label String
+                 | FunctionCall String [Value] Value
     deriving (Show)
 data Value = Constant Integer | Var String
     deriving (Show)
@@ -42,11 +43,12 @@ tack :: P.Program -> Either String Program
 tack prog = Right $ evalState (scan prog) (0, 0)
 
 scan :: P.Program -> Counter Program
-scan (P.Program f) = Program <$> funcDef (head f)
+scan (P.Program f) = Program <$> mapM funcDef f
 
 funcDef :: P.Function -> Counter FuncDef
 funcDef (P.Function name params (Just (P.Block items))) =
-    FuncDef name . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
+    FuncDef name params . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
+funcDef (P.Function name params Nothing) = return $ FuncDef name params []
 
 blockItem :: P.BlockItem -> Counter [Instruction]
 blockItem (P.S s) = statement s
@@ -54,6 +56,7 @@ blockItem (P.D (P.VarDecl (name, Just v))) = do
     foo <- expr $ P.Assignment (P.Var name) v
     return $ snd foo
 blockItem (P.D (P.VarDecl (_, Nothing))) = return []
+blockItem (P.D (P.FuncDecl _)) = return []
 
 statement :: P.Statement -> Counter [Instruction]
 statement (P.Return e) = do
@@ -216,6 +219,10 @@ expr (P.Conditional eCond eIf eElse) = do
     return (ret, is ++ [JZero cond e2Label] ++ snd ifIs
         ++ [Copy (fst ifIs) ret, Jump end, Label e2Label]
         ++ snd elseIs ++ [Copy (fst elseIs) ret, Label end])
+expr (P.FunctionCall name args) = do
+    es <- mapM expr args
+    dst <- Var <$> tmpVar
+    return (dst, concatMap snd es ++ [FunctionCall name (map fst es) dst])
 
 expr _ = error "Invalid expression!"
 
