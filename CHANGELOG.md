@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.9.0.0 -- 2025-09-02
+
+* Chapter 9 basically finished, I hadn't done the PLT asm bit for extern functions in Linux, but all the test passed without it. Resolved the pending bitsize for registers from chapter 4 since mov/push have differing widths. I can say hello world now!
+
 ## 0.8.0.0 -- 2025-08-23
 
 * Chapter 8 complete, I added switch but I noticed there's no support for more advanced expression in cases (like 2 + 3, 1 << 2, etc.) in the unit tests. Looking through the book they don't seem to come in later either, I guess this is something you'd have to introduce on your own.

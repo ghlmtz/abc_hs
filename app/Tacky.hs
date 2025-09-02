@@ -11,7 +11,7 @@ module Tacky
 import qualified Parse as P
 
 import Control.Monad.State
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isJust)
 
 type Counter = State (Int, Int)
 
@@ -43,7 +43,7 @@ tack :: P.Program -> Either String Program
 tack prog = Right $ evalState (scan prog) (0, 0)
 
 scan :: P.Program -> Counter Program
-scan (P.Program f) = Program <$> mapM funcDef f
+scan (P.Program f) = Program <$> mapM funcDef (filter (\(P.Function _ _ x) -> isJust x) f)
 
 funcDef :: P.Function -> Counter FuncDef
 funcDef (P.Function name params (Just (P.Block items))) =

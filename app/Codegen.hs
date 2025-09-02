@@ -16,6 +16,9 @@ data Instruction = Mov Operand Operand
                  | MovB Operand Operand
                  | Ret
                  | AllocateStack Integer
+                 | DeallocStack Integer
+                 | Push Operand
+                 | Call String
                  | Unary UnaryOp Operand
                  | Binary BinaryOp Operand Operand
                  | IDiv Operand
@@ -29,9 +32,11 @@ data UnaryOp = Neg | Not
 data BinaryOp = Add | Sub | Mult | And | Or | Xor | LeftShift | RightShift
 data Operand = Imm Integer
              | Reg Register
+             | Reg1 Register
+             | Reg8 Register
              | Stack Integer
 data CondCode = E | NE | G | GE | L | LE
-data Register = AX | CX | DX | R10 | R11
+data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11
 
 type VarList = State [String]
 type MayError = Either String
@@ -50,10 +55,25 @@ showOperand :: Operand -> String
 showOperand (Imm i) = "$" ++ show i
 showOperand (Reg AX) = "%eax"
 showOperand (Reg DX) = "%edx"
+showOperand (Reg R8) = "%r8d"
+showOperand (Reg R9) = "%r9d"
 showOperand (Reg R10) = "%r10d"
 showOperand (Reg R11) = "%r11d"
 showOperand (Stack n) = show n ++ "(%rbp)"
-showOperand (Reg CX) = "%cl"
+showOperand (Reg CX) = "%ecx"
+showOperand (Reg DI) = "%edi"
+showOperand (Reg SI) = "%esi"
+showOperand (Reg1 CX) = "%cl"
+showOperand (Reg1 _) = error "Not implemented!"
+showOperand (Reg8 AX) = "%rax"
+showOperand (Reg8 DX) = "%rdx"
+showOperand (Reg8 CX) = "%rcx"
+showOperand (Reg8 DI) = "%rdi"
+showOperand (Reg8 SI) = "%rsi"
+showOperand (Reg8 R8) = "%r8"
+showOperand (Reg8 R9) = "%r9"
+showOperand (Reg8 R10) = "%r10"
+showOperand (Reg8 R11) = "%r11"
 
 instance Show Instruction where show = showInstruction
 
@@ -71,6 +91,9 @@ showInstruction (Jmp lbl) = "\tjmp\t.L" ++ lbl
 showInstruction (Cmp op1 op2) = "\tcmpl\t" ++ show op1 ++ ", " ++ show op2
 showInstruction (JmpCC code lbl) = "\tj" ++ show code ++ "\t.L" ++ lbl
 showInstruction (SetCC code op) = "\tset" ++ show code ++ "\t" ++ show op
+showInstruction (Call name) = "\tcall\t" ++ name
+showInstruction (DeallocStack n) = "\taddq\t$" ++ show n ++ ", %rsp"
+showInstruction (Push op) = "\tpushq\t" ++ show op
 
 instance Show FuncDef where show = showFuncDef
 
@@ -96,7 +119,7 @@ showBinaryOp RightShift = "\tsar"
 instance Show Program where show = showProgram
 
 showProgram :: Program -> [Char]
-showProgram (Program f) = show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
+showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
 genCode :: T.Program -> MayError Program
 genCode prog = pure $ evalState (pass1 prog) []
@@ -106,9 +129,29 @@ pass1 (T.Program f) = Program <$> mapM funcDef f
 
 funcDef :: T.FuncDef -> VarList FuncDef
 funcDef (T.FuncDef name params stmt) = do
+    paramInts <- parseParams 0 params
     mapStmt <- mapM statement stmt
     len <- gets length
-    return $ FuncDef name (AllocateStack (negate $ (+4) $ convertIdx len) : concat mapStmt)
+    let s = negate $ (+4) $ convertIdx len
+        s' = ((s - s `mod` 16) ` div` 16) * 16 + 16
+    return $ FuncDef name (AllocateStack s' : paramInts ++ concat mapStmt)
+
+
+
+regs :: [Operand]
+regs = [Reg DI, Reg SI, Reg DX, Reg CX, Reg R8, Reg R9]
+
+parseParams :: Int -> [String] -> VarList [Instruction]
+parseParams _ [] = return []
+parseParams n (x:xs)
+    | n < 6 = do
+        e <- expr (T.Var x)
+        p <- parseParams (n+1) xs
+        return $ Mov (regs !! n) e : p
+    | otherwise = do
+        e <- expr (T.Var x)
+        p <- parseParams (n+1) xs
+        return $ fixMov (Stack ((fromIntegral n - 6) * 8 + 16)) e ++ p
 
 fixCmp :: Operand -> Operand -> [Instruction]
 fixCmp v1 v2 = do
@@ -140,8 +183,34 @@ statement (T.JNZero cond target) = do
     cond' <- expr cond
     return $ fixCmp (Imm 0) cond' ++ [JmpCC NE target]
 statement (T.Label lbl) = return [Label lbl]
-statement (T.Copy src dst) = 
+statement (T.Copy src dst) =
     fixMov <$> expr src <*> expr dst
+statement (T.FunctionCall name args dst) = funCall name args dst
+
+funCall :: String -> [T.Value] -> T.Value -> VarList [Instruction]
+funCall name args dst = do
+    let regArgs = take 6 args
+        stackArgs = reverse $ drop 6 args
+        padding = if odd (length stackArgs) then 8 else 0
+        start = [AllocateStack padding | padding > 0]
+        remove = padding + 8 * fromIntegral (length stackArgs)
+        dealloc = [DeallocStack remove | remove > 0]
+    is <- mapM resolveReg $ zip regArgs regs
+    stackIs <- mapM resolveStack stackArgs
+    eDst <- expr dst
+    return $ start ++ is ++ concat stackIs ++ [Call name] ++ dealloc ++ [Mov (Reg AX) eDst]
+
+resolveReg :: (T.Value, Operand) -> VarList Instruction
+resolveReg (v,r) = do
+    e <- expr v
+    return $ Mov e r
+
+resolveStack :: T.Value -> VarList [Instruction]
+resolveStack v = do
+    e <- expr v
+    if isStack e then
+        return [Mov e (Reg AX), Push (Reg8 AX)]
+    else return [Push e]
 
 binaryOp :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
 binaryOp op
@@ -192,10 +261,10 @@ foo op s1 s2 dst = do
 
 shift :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
 shift op s1 s2 dst = do
-    let s2_int = ([MovB s2 (Reg CX) | isStack s2])
-        s2'' = if isStack s2 then Reg CX else s2
+    let s2_int = ([MovB s2 (Reg1 CX) | isStack s2])
+        s2'' = if isStack s2 then Reg1 CX else s2
 
-    fixMov s1 dst ++ s2_int ++ 
+    fixMov s1 dst ++ s2_int ++
         if isStack dst
         then [Mov dst (Reg R11), Binary (binOp op) s2'' (Reg R11), Mov (Reg R11) dst]
         else [Binary (binOp op) s2'' dst]
