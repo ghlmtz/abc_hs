@@ -9,8 +9,8 @@ module Parse
 , ForInit(..)
 , Block(..)
 , BlockItem(..)
-, Function(..)
 , Program(..)
+, Storage(..)
 ) where
 
 import Lex (CToken)
@@ -30,6 +30,8 @@ data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
               | LogAnd | LogOr | Equal | NotEqual | LessThan | LessEqual
               | GreaterThan | GreaterEqual
     deriving (Show, Eq)
+data Storage = Static | Extern
+    deriving (Show, Eq)
 data Expr = Int Integer
            | Unary UnaryOp Expr
            | Binary BinaryOp Expr Expr
@@ -39,8 +41,8 @@ data Expr = Int Integer
            | Conditional Expr Expr Expr
            | FunctionCall String [Expr]
     deriving (Show)
-type VarDecl = (String, Maybe Expr)
-data Declaration = FuncDecl Function | VarDecl VarDecl
+data Declaration = FuncDecl String [String] (Maybe Storage) (Maybe Block) 
+                 | VarDecl String (Maybe Storage) (Maybe Expr) 
     deriving (Show)
 newtype Block = Block [BlockItem]
     deriving (Show)
@@ -64,9 +66,7 @@ data Statement = Return Expr
     deriving (Show)
 data BlockItem = S Statement | D Declaration
     deriving (Show)
-data Function = Function String [String] (Maybe Block)
-    deriving (Show)
-newtype Program = Program [Function]
+newtype Program = Program [Declaration]
     deriving (Show)
 
 parser :: [CToken] -> MayError Program
@@ -86,14 +86,16 @@ isIdent (L.Identifier _) = True
 isIdent _ = False
 
 program :: TokenParser Program
-program = Program <$> many function
+program = Program <$> many declaration
 
-function :: TokenParser Function
+function :: TokenParser Declaration
 function = do
-    name <- isToken L.Int *> satisfy isIdent
+    specs <- some specifier
+    name <- satisfy isIdent
     ps <- isToken L.LeftParen *> params <* isToken L.RightParen
     body <- (Just <$> block) <|> (isToken L.Semicolon >> return Nothing)
-    return $ Function (getIdent name) ps body
+    let s = foldl foldSpec (False, Nothing) specs
+    return $ FuncDecl (getIdent name) ps (snd s) body
 
 params :: TokenParser [String]
 params = (isToken L.Void >> return [])
@@ -111,14 +113,29 @@ block = do
     return $ Block items
 
 declaration :: TokenParser Declaration
-declaration = try variable <|> FuncDecl <$> function
+declaration = try variable <|> function
 
 variable :: TokenParser Declaration
 variable = do
-    name <- isToken L.Int *> satisfy isIdent
+    specs <- some specifier
+    name <- satisfy isIdent
     assign <- optional (isToken L.Equal *> expr)
     _ <- isToken L.Semicolon
-    return $ VarDecl (getIdent name, assign)
+    let s = foldl foldSpec (False, Nothing) specs
+    if not $ fst s then error "No type" else
+        return $ VarDecl (getIdent name) (snd s) assign
+
+foldSpec :: (Bool, Maybe Storage) ->  (Bool, Maybe Storage) -> (Bool, Maybe Storage)
+foldSpec (True, _) (True, _) = error "Invalid specifier"
+foldSpec (False, s) (True, _) = (True, s)
+foldSpec (t, Nothing) (_, Just x) = (t, Just x)
+foldSpec _ _ = error "Invalid specifier"
+
+specifier :: TokenParser (Bool, Maybe Storage)
+specifier = 
+        (True, Nothing) <$ isToken L.Int
+    <|> (False, Just Static) <$ isToken L.Static
+    <|> (False, Just Extern) <$ isToken L.Extern
 
 statement :: TokenParser Statement
 statement = try labelStmt

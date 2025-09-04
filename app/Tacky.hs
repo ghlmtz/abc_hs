@@ -2,22 +2,32 @@ module Tacky
 (
   tack
 , Program(..)
-, FuncDef(..)
+, TopLevel(..)
 , Instruction(..)
 , UnaryOp(..)
 , Value(..)
 ) where
 
 import qualified Parse as P
+import TypeCheck
 
 import Control.Monad.State
 import Data.Maybe (catMaybes, isJust)
+import qualified Data.Map as M
 
-type Counter = State (Int, Int)
 
-newtype Program = Program [FuncDef]
+data TackyState = TackyState {
+  varCt :: Int
+, labelCt :: Int
+, symbols :: M.Map String (Type, IdentAttr)
+}
+
+type Counter = State TackyState
+
+newtype Program = Program [TopLevel]
     deriving (Show)
-data FuncDef = FuncDef String [String] [Instruction]
+data TopLevel = FuncDef String Bool [String] [Instruction]
+              | StaticVar String Bool Integer
     deriving (Show)
 data Instruction = Return Value
                  | Unary UnaryOp Value Value
@@ -39,24 +49,49 @@ data Value = Constant Integer | Var String
 data UnaryOp = Complement | Negate | Not
     deriving (Show)
 
-tack :: P.Program -> Either String Program
-tack prog = Right $ evalState (scan prog) (0, 0)
+tack :: (P.Program, M.Map String (Type, IdentAttr)) -> Either String (Program, M.Map String (Type, IdentAttr))
+tack (prog, syms) = Right (prog', syms)
+    where prog' = combo (Program (convertSyms (M.assocs syms))) $ evalState (scan prog) $ TackyState 0 0 syms
+
+combo :: Program -> Program -> Program
+combo (Program a) (Program b) = Program (b ++ a)
+
+convertSyms :: [(String, (Type, IdentAttr))] -> [TopLevel]
+convertSyms ((name, (_, StaticAttr (Initial i) global)):syms) = StaticVar name global i : convertSyms syms
+convertSyms ((name, (_, StaticAttr Tentative global)):syms) = StaticVar name global 0 : convertSyms syms
+convertSyms (_:syms) = convertSyms syms
+convertSyms [] = []
 
 scan :: P.Program -> Counter Program
-scan (P.Program f) = Program <$> mapM funcDef (filter (\(P.Function _ _ x) -> isJust x) f)
+scan (P.Program f) = Program <$> mapM funcDef (filter fil f)
+    where fil (P.FuncDecl _ _ _ x) = isJust x
+          fil _ = False
 
-funcDef :: P.Function -> Counter FuncDef
-funcDef (P.Function name params (Just (P.Block items))) =
-    FuncDef name params . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
-funcDef (P.Function name params Nothing) = return $ FuncDef name params []
+funcDef :: P.Declaration -> Counter TopLevel
+funcDef (P.FuncDecl name params _ (Just (P.Block items))) = do
+    g <- attrGlobal name
+    FuncDef name g params . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
+funcDef (P.FuncDecl name params _ Nothing) = do
+    g <- attrGlobal name
+    return $ FuncDef name g params []
+funcDef _ = return $ StaticVar [] False 0
+
+attrGlobal :: String -> Counter Bool
+attrGlobal name = do
+    syms <- gets symbols
+    case M.lookup name syms of
+        Just (_, StaticAttr _ a) -> return a
+        Just (_, FunAttr _ a) -> return a
+        _ -> return False
 
 blockItem :: P.BlockItem -> Counter [Instruction]
 blockItem (P.S s) = statement s
-blockItem (P.D (P.VarDecl (name, Just v))) = do
+blockItem (P.D (P.VarDecl _ (Just P.Static) _)) = return []
+blockItem (P.D (P.VarDecl name _ (Just v))) = do
     foo <- expr $ P.Assignment (P.Var name) v
     return $ snd foo
-blockItem (P.D (P.VarDecl (_, Nothing))) = return []
-blockItem (P.D (P.FuncDecl _)) = return []
+blockItem (P.D (P.VarDecl _ _ Nothing)) = return []
+blockItem (P.D (P.FuncDecl {})) = return []
 
 statement :: P.Statement -> Counter [Instruction]
 statement (P.Return e) = do
@@ -228,12 +263,12 @@ expr _ = error "Invalid expression!"
 
 tmpVar :: Counter String
 tmpVar = do
-    idx <- gets (show . fst)
-    modify $ \(x,y) -> (x+1, y)
+    idx <- gets (show . varCt)
+    modify $ \x -> x { varCt = 1 + varCt x}
     return $ "tmp." ++ idx
 
 tmpLabel :: String -> Counter String
 tmpLabel name = do
-    idx <- gets (show . snd)
-    modify $ \(x,y) -> (x, y+1)
+    idx <- gets (show . labelCt)
+    modify $ \x -> x { labelCt = 1 + labelCt x}
     return $ "label_" ++ name ++ idx

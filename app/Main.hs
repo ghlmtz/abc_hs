@@ -7,6 +7,7 @@ import Parse (parser)
 import Semantic (resolve)
 import Tacky (tack)
 import Codegen (genCode)
+import Control.Exception (try, evaluate, SomeException)
 
 data ProgType = Normal | Lex | Parse | Semantic | Tacky | Codegen
     deriving (Eq)
@@ -39,7 +40,11 @@ main = do
         case result of 
             Left (Left e) -> print e >> exitFailure -- error from the parser
             Left (Right e) -> putStrLn e -- premature stop from option
-            Right asm -> writeAsmFile (head args) (show asm) -- time to compile!
+            Right asm -> do
+                res <- try (evaluate (show asm)) :: IO (Either SomeException String)
+                case res of 
+                    Left e -> print e >> exitFailure
+                    Right e -> writeAsmFile (head args) e
 
 writeAsmFile :: FilePath -> String -> IO ()
 writeAsmFile = writeFile . (++ "s") . init

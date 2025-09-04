@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.10.0.0 -- 2025-09-04
+
+* Chapter 10 and Part I complete! Code is in bad need of refactoring and I will likely do some cleanup before going into Part II. It was confirmed that more advanced constant expressions aren't part of the book since static variables should get those too.
+
 ## 0.9.0.0 -- 2025-09-02
 
 * Chapter 9 basically finished, I hadn't done the PLT asm bit for extern functions in Linux, but all the test passed without it. Resolved the pending bitsize for registers from chapter 4 since mov/push have differing widths. I can say hello world now!

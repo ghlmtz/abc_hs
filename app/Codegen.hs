@@ -9,9 +9,12 @@ import qualified Parse as P
 import Control.Monad.State
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
+import TypeCheck
+import qualified Data.Map as M
 
-newtype Program = Program [FuncDef]
-data FuncDef = FuncDef String [Instruction]
+newtype Program = Program [TopLevel]
+data TopLevel = FuncDef String Bool [Instruction]
+              | StaticVar String Bool Integer
 data Instruction = Mov Operand Operand
                  | MovB Operand Operand
                  | Ret
@@ -35,10 +38,15 @@ data Operand = Imm Integer
              | Reg1 Register
              | Reg8 Register
              | Stack Integer
+             | Data String
 data CondCode = E | NE | G | GE | L | LE
 data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11
 
-type VarList = State [String]
+data CodeState = CodeState {
+  varList :: [String]
+, symbols :: M.Map String (Type, IdentAttr)
+}
+type CodeMonad = State CodeState
 type MayError = Either String
 
 instance Show CondCode where show = showCode
@@ -74,7 +82,7 @@ showOperand (Reg8 R8) = "%r8"
 showOperand (Reg8 R9) = "%r9"
 showOperand (Reg8 R10) = "%r10"
 showOperand (Reg8 R11) = "%r11"
-
+showOperand (Data name) = name ++ "(%rip)"
 instance Show Instruction where show = showInstruction
 
 showInstruction :: Instruction -> [Char]
@@ -95,11 +103,19 @@ showInstruction (Call name) = "\tcall\t" ++ name
 showInstruction (DeallocStack n) = "\taddq\t$" ++ show n ++ ", %rsp"
 showInstruction (Push op) = "\tpushq\t" ++ show op
 
-instance Show FuncDef where show = showFuncDef
+instance Show TopLevel where show = showTopLevel
 
-showFuncDef :: FuncDef -> [Char]
-showFuncDef (FuncDef s is) = "\t.globl " ++ s ++ "\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . show) is
+showGlobal :: [Char] -> Bool -> [Char]
+showGlobal s True = "\t.globl " ++ s ++ "\n"
+showGlobal _ False = ""
 
+showTopLevel :: TopLevel -> [Char]
+showTopLevel (FuncDef s global is) = 
+    showGlobal s global ++ "\t.text\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . show) is
+showTopLevel (StaticVar s global initial) = 
+    let dat = if initial == 0 then "\t.bss\n" else "\t.data\n"
+        i = if initial == 0 then ":\n\t.zero 4" else ":\n\t.long " ++ show initial in
+    showGlobal s global ++ dat ++ "\t.align 4\n" ++ s ++ i ++ "\n"
 instance Show UnaryOp where show = showUnaryOp
 showUnaryOp :: UnaryOp -> [Char]
 showUnaryOp Neg = "\tnegl"
@@ -121,27 +137,26 @@ instance Show Program where show = showProgram
 showProgram :: Program -> [Char]
 showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
-genCode :: T.Program -> MayError Program
-genCode prog = pure $ evalState (pass1 prog) []
+genCode :: (T.Program, M.Map String (Type, IdentAttr)) -> MayError Program
+genCode (prog, syms) = pure $ evalState (pass1 prog) $ CodeState [] syms
 
-pass1 :: T.Program -> VarList Program
-pass1 (T.Program f) = Program <$> mapM funcDef f
+pass1 :: T.Program -> CodeMonad Program
+pass1 (T.Program f) = Program <$> mapM topLevel f
 
-funcDef :: T.FuncDef -> VarList FuncDef
-funcDef (T.FuncDef name params stmt) = do
+topLevel :: T.TopLevel -> CodeMonad TopLevel
+topLevel (T.FuncDef name global params stmt) = do
     paramInts <- parseParams 0 params
     mapStmt <- mapM statement stmt
-    len <- gets length
+    len <- gets (length . varList)
     let s = negate $ (+4) $ convertIdx len
         s' = ((s - s `mod` 16) ` div` 16) * 16 + 16
-    return $ FuncDef name (AllocateStack s' : paramInts ++ concat mapStmt)
-
-
+    return $ FuncDef name global (AllocateStack s' : paramInts ++ concat mapStmt)
+topLevel (T.StaticVar name global initial) = return $ StaticVar name global initial
 
 regs :: [Operand]
 regs = [Reg DI, Reg SI, Reg DX, Reg CX, Reg R8, Reg R9]
 
-parseParams :: Int -> [String] -> VarList [Instruction]
+parseParams :: Int -> [String] -> CodeMonad [Instruction]
 parseParams _ [] = return []
 parseParams n (x:xs)
     | n < 6 = do
@@ -161,7 +176,7 @@ fixCmp v1 v2 = do
         v2_int = ([Mov v2 (Reg R11) | isConstant v2])
     v1_int ++ v2_int ++ [Cmp v1' v2']
 
-statement :: T.Instruction -> VarList [Instruction]
+statement :: T.Instruction -> CodeMonad [Instruction]
 statement (T.Return e) = do
     e' <- expr e
     return [Mov e' (Reg AX), Ret]
@@ -187,7 +202,7 @@ statement (T.Copy src dst) =
     fixMov <$> expr src <*> expr dst
 statement (T.FunctionCall name args dst) = funCall name args dst
 
-funCall :: String -> [T.Value] -> T.Value -> VarList [Instruction]
+funCall :: String -> [T.Value] -> T.Value -> CodeMonad [Instruction]
 funCall name args dst = do
     let regArgs = take 6 args
         stackArgs = reverse $ drop 6 args
@@ -200,12 +215,12 @@ funCall name args dst = do
     eDst <- expr dst
     return $ start ++ is ++ concat stackIs ++ [Call name] ++ dealloc ++ [Mov (Reg AX) eDst]
 
-resolveReg :: (T.Value, Operand) -> VarList Instruction
+resolveReg :: (T.Value, Operand) -> CodeMonad Instruction
 resolveReg (v,r) = do
     e <- expr v
     return $ Mov e r
 
-resolveStack :: T.Value -> VarList [Instruction]
+resolveStack :: T.Value -> CodeMonad [Instruction]
 resolveStack v = do
     e <- expr v
     if isStack e then
@@ -271,6 +286,7 @@ shift op s1 s2 dst = do
 
 isStack :: Operand -> Bool
 isStack (Stack _) = True
+isStack (Data _) = True
 isStack _ = False
 
 isConstant :: Operand -> Bool
@@ -293,12 +309,17 @@ binOp P.LeftShift = LeftShift
 binOp P.RightShift = RightShift
 binOp _ = error "Bad binary operand"
 
-expr :: T.Value -> VarList Operand
+expr :: T.Value -> CodeMonad Operand
 expr (T.Constant i) = return $ Imm i
 expr (T.Var v) = do
-    s <- get
-    if v `elem` s then return $ Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
-    else put (s ++ [v]) >> return (Stack $ convertIdx $ length s)
+    s <- gets varList
+    syms <- gets symbols
+    case M.lookup v syms of
+        Just (_, StaticAttr {}) -> return (Data v)
+        _ -> if v `elem` s then return $ Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
+                else do 
+                    modify $ \x -> x {varList = s ++ [v]}
+                    return (Stack $ convertIdx $ length s)
 
 convertIdx :: Int -> Integer
 convertIdx = fromIntegral . (*) (-4) . (+1)
