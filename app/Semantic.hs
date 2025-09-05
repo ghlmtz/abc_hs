@@ -74,7 +74,7 @@ gotoStmt (Goto name) = do
         Nothing -> writeError "Goto missing label!"
 gotoStmt (If e1 s1 s2) = do
     s1' <- gotoStmt s1
-    s2' <- resolveOpt s2 gotoStmt
+    s2' <- traverse gotoStmt s2
     return $ If e1 s1' s2'
 gotoStmt (Switch e s n c) = do
     s' <- gotoStmt s
@@ -98,14 +98,8 @@ resolveProg (Program f) = Program <$> mapM resolveDecl f
 resolveFunc :: Declaration -> SemanticMonad Declaration
 resolveFunc (FuncDecl name params t blk) = do
     gm <- gets blockVars
-    lm <- asks identifierMap
     level <- asks blockScope
     when (level && t == Just Static) $ writeError "Cannot have static function at block level"
-    case M.lookup name gm of
-        Just x -> if snd x then return () else writeError "Duplicate declaration"
-        Nothing -> case M.lookup name lm of
-                    Just _ -> return ()
-                    Nothing -> return ()
     modify $ \x -> x { blockVars = M.insert name (name, True) gm }
 
     s <- gets (remap . blockVars)
@@ -145,12 +139,8 @@ resolveItem :: BlockItem -> SemanticMonad BlockItem
 resolveItem (S stmt) = S <$> resolveStmt stmt
 resolveItem (D decl) = D <$> resolveDecl decl
 
-resolveOpt :: Monad f => Maybe a -> (a -> f a) -> f (Maybe a)
-resolveOpt (Just e) f = Just <$> f e
-resolveOpt Nothing _ = return Nothing
-
 resolveForInit :: ForInit -> SemanticMonad ForInit
-resolveForInit (InitExpr e) = InitExpr <$> resolveOpt e resolveExpr
+resolveForInit (InitExpr e) = InitExpr <$> traverse resolveExpr e
 resolveForInit (InitDecl d) = do
     d' <- resolveDecl d
     case d' of
@@ -161,8 +151,8 @@ resolveForInit (InitDecl d) = do
 resolveFor :: Statement -> SemanticMonad Statement
 resolveFor (For initial cond post body name) = do
     i <- resolveForInit initial
-    c <- resolveOpt cond resolveExpr
-    p <- resolveOpt post resolveExpr
+    c <- traverse resolveExpr cond
+    p <- traverse resolveExpr post
     b <- resolveStmt body
     return $ For i c p b name
 resolveFor _ = error "Shouldn't happen"
@@ -183,7 +173,7 @@ resolveStmt (Expression e) = Expression <$> resolveExpr e
 resolveStmt (If e1 e2 e3) = do
     r1 <- resolveExpr e1
     r2 <- resolveStmt e2
-    r3 <- resolveOpt e3 resolveStmt
+    r3 <- traverse resolveStmt e3
     return $ If r1 r2 r3
 resolveStmt (While e s _) = do
     label <- uniqueLabel
@@ -199,16 +189,14 @@ resolveStmt (DoWhile s e _) = do
         return $ DoWhile s1 e1 label
 resolveStmt (Case e s) = do
     l <- asks switchLabel
-    e1 <- resolveExpr e
+    n <- evalConstant =<< resolveExpr e
     s1 <- resolveStmt s
     case l of
         Just l' -> do
-            n <- evalConstant e1
             lbls <- gets switchLabels
-            if Just n `elem` lbls then writeError "Duplicate case!"
-            else do
-                modify $ \x -> x { switchLabels = Just n : switchLabels x}
-                return $ Labelled (l' ++ "." ++ show n) s1
+            when (Just n `elem` lbls) $ writeError "Duplicate case!"
+            modify $ \x -> x { switchLabels = Just n : lbls}
+            return $ Labelled (l' ++ "." ++ show n) s1
         Nothing   -> writeError "Not in switch!"
 resolveStmt (Default s) = do
     l <- asks switchLabel
@@ -216,10 +204,9 @@ resolveStmt (Default s) = do
     case l of
         Just l' -> do
             lbls <- gets switchLabels
-            if Nothing `elem` lbls then writeError "Duplicate default!"
-            else do
-                modify $ \x -> x { switchLabels = Nothing : switchLabels x}
-                return $ Labelled (l' ++ ".default") s1
+            when (Nothing `elem` lbls) $ writeError "Duplicate default!"
+            modify $ \x -> x { switchLabels = Nothing : lbls}
+            return $ Labelled (l' ++ ".default") s1
         Nothing   -> writeError "Not in switch!"
 resolveStmt (For i c p b _) = do
     label <- uniqueLabel
@@ -250,15 +237,14 @@ resolveStmt (Labelled name stmt) = do
     s1 <- resolveStmt stmt
     m <- gets labels
     unique <- uniqueLabel
-    if isJust (lookup name m) then writeError "Duplicate label declaration!"
-    else modify $ \x -> x {labels = (name, unique) : labels x}
+    when (isJust (lookup name m)) $ writeError "Duplicate label declaration!"
+    modify $ \x -> x {labels = (name, unique) : labels x}
     return $ Labelled unique s1
 resolveStmt (Compound (Block items)) = Compound <$> resolveBlock items
 resolveStmt op = return op
 
 writeError :: String -> SemanticMonad a
-writeError s = do
-    modify (\x -> x { err = Just s}) *> error s
+writeError s = modify (\x -> x { err = Just s }) *> error s
 
 resolveDecl :: Declaration -> SemanticMonad Declaration
 resolveDecl (VarDecl name s initial) = do
@@ -266,17 +252,15 @@ resolveDecl (VarDecl name s initial) = do
     inBlock <- asks blockScope
     uniq <- if not inBlock
         then do
-            modify $ \x -> x {blockVars = M.insert name (name, True) $ blockVars x}
+            modify $ \x -> x {blockVars = M.insert name (name, True) m}
             return name
-        else do
-            let scopeVar = M.lookup name m
-            case scopeVar of
+        else case M.lookup name m of
                 Just (v, b) -> if not (b && s == Just Extern)
                                then writeError "Duplicate variable declaration!"
                                else modify id >> return v
                 Nothing -> do
                     unique <- if s == Just Extern then return name else uniqueVar
-                    modify $ \x -> x {blockVars = M.insert name (unique, s == Just Extern) $ blockVars x}
+                    modify $ \x -> x {blockVars = M.insert name (unique, s == Just Extern) m}
                     return unique
     case initial of
         Just x  -> VarDecl uniq s . Just <$> resolveExpr x
@@ -291,11 +275,11 @@ resolveExpr (CompoundAssignment op (Var s) r) = do
     CompoundAssignment op <$> resolveExpr (Var s) <*> resolveExpr r
 resolveExpr (CompoundAssignment {}) = writeError "Invalid lvalue!"
 resolveExpr (Var v) = do
-    gm <- gets blockVars
-    lm <- asks identifierMap
-    case M.lookup v gm of
+    gm <- gets (M.lookup v . blockVars)
+    lm <- asks (M.lookup v . identifierMap)
+    case gm of
         Just x -> return $ Var (fst x)
-        Nothing -> case M.lookup v lm of
+        Nothing -> case lm of
                     Just x -> return $ Var (fst x)
                     Nothing -> writeError $ "Undeclared variable: " ++ show v
 resolveExpr (Unary PreDec (Var s)) = Unary PreDec <$> resolveExpr (Var s)
@@ -311,22 +295,22 @@ resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
 resolveExpr (Int i) = return (Int i)
 resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
 resolveExpr (FunctionCall name args) = do
-    gm <- gets blockVars
-    lm <- asks identifierMap
-    case M.lookup name gm of
+    gm <- gets (M.lookup name . blockVars)
+    lm <- asks (M.lookup name . identifierMap)
+    case gm of
         Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
-        Nothing -> case M.lookup name lm of
+        Nothing -> case lm of
                     Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
                     Nothing -> writeError $ "Undeclared function: " ++ show name
 
 uniqueName :: String -> SemanticMonad String
 uniqueName s = do
-    ct <- gets (show . nameCount)
-    modify $ \x -> x {nameCount = 1 + nameCount x}
-    return $ s ++ ct
+    ct <- gets nameCount
+    modify $ \x -> x {nameCount = 1 + ct}
+    return $ s ++ show ct
 
 uniqueVar :: SemanticMonad String
 uniqueVar = uniqueName "var."
 
 uniqueLabel :: SemanticMonad String
-uniqueLabel = uniqueName "lbl_"
+uniqueLabel = uniqueName "lbl."

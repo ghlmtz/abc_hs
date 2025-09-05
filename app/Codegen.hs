@@ -6,6 +6,7 @@ module Codegen
 import qualified Tacky as T
 import qualified Parse as P
 
+import Control.Monad.Reader
 import Control.Monad.State
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
@@ -44,9 +45,9 @@ data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11
 
 data CodeState = CodeState {
   varList :: [String]
-, symbols :: M.Map String (Type, IdentAttr)
 }
-type CodeMonad = State CodeState
+type SymbolMap = M.Map String (Type, IdentAttr)
+type CodeMonad m = ReaderT SymbolMap (State CodeState) m
 type MayError = Either String
 
 instance Show CondCode where show = showCode
@@ -138,7 +139,7 @@ showProgram :: Program -> [Char]
 showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
 genCode :: (T.Program, M.Map String (Type, IdentAttr)) -> MayError Program
-genCode (prog, syms) = pure $ evalState (pass1 prog) $ CodeState [] syms
+genCode (prog, syms) = pure $ evalState (runReaderT (pass1 prog) syms) $ CodeState []
 
 pass1 :: T.Program -> CodeMonad Program
 pass1 (T.Program f) = Program <$> mapM topLevel f
@@ -313,8 +314,8 @@ expr :: T.Value -> CodeMonad Operand
 expr (T.Constant i) = return $ Imm i
 expr (T.Var v) = do
     s <- gets varList
-    syms <- gets symbols
-    case M.lookup v syms of
+    val <- asks (M.lookup v)
+    case val of
         Just (_, StaticAttr {}) -> return (Data v)
         _ -> if v `elem` s then return $ Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
                 else do 

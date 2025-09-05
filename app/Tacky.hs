@@ -11,6 +11,7 @@ module Tacky
 import qualified Parse as P
 import TypeCheck
 
+import Control.Monad.Reader
 import Control.Monad.State
 import Data.Maybe (catMaybes, isJust)
 import qualified Data.Map as M
@@ -19,10 +20,10 @@ import qualified Data.Map as M
 data TackyState = TackyState {
   varCt :: Int
 , labelCt :: Int
-, symbols :: M.Map String (Type, IdentAttr)
 }
 
-type Counter = State TackyState
+type SymbolMap = M.Map String (Type, IdentAttr)
+type TackyMonad m = ReaderT SymbolMap (State TackyState) m
 
 newtype Program = Program [TopLevel]
     deriving (Show)
@@ -51,7 +52,7 @@ data UnaryOp = Complement | Negate | Not
 
 tack :: (P.Program, M.Map String (Type, IdentAttr)) -> Either String (Program, M.Map String (Type, IdentAttr))
 tack (prog, syms) = Right (prog', syms)
-    where prog' = combo (Program (convertSyms (M.assocs syms))) $ evalState (scan prog) $ TackyState 0 0 syms
+    where prog' = combo (Program (convertSyms (M.assocs syms))) $ evalState (runReaderT (scan prog) syms) $ TackyState 0 0
 
 combo :: Program -> Program -> Program
 combo (Program a) (Program b) = Program (b ++ a)
@@ -62,12 +63,12 @@ convertSyms ((name, (_, StaticAttr Tentative global)):syms) = StaticVar name glo
 convertSyms (_:syms) = convertSyms syms
 convertSyms [] = []
 
-scan :: P.Program -> Counter Program
+scan :: P.Program -> TackyMonad Program
 scan (P.Program f) = Program <$> mapM funcDef (filter fil f)
     where fil (P.FuncDecl _ _ _ x) = isJust x
           fil _ = False
 
-funcDef :: P.Declaration -> Counter TopLevel
+funcDef :: P.Declaration -> TackyMonad TopLevel
 funcDef (P.FuncDecl name params _ (Just (P.Block items))) = do
     g <- attrGlobal name
     FuncDef name g params . concat <$> mapM blockItem (items ++ [P.S (P.Return (P.Int 0))])
@@ -76,15 +77,15 @@ funcDef (P.FuncDecl name params _ Nothing) = do
     return $ FuncDef name g params []
 funcDef _ = return $ StaticVar [] False 0
 
-attrGlobal :: String -> Counter Bool
+attrGlobal :: String -> TackyMonad Bool
 attrGlobal name = do
-    syms <- gets symbols
-    case M.lookup name syms of
+    val <- asks (M.lookup name)
+    case val of
         Just (_, StaticAttr _ a) -> return a
         Just (_, FunAttr _ a) -> return a
         _ -> return False
 
-blockItem :: P.BlockItem -> Counter [Instruction]
+blockItem :: P.BlockItem -> TackyMonad [Instruction]
 blockItem (P.S s) = statement s
 blockItem (P.D (P.VarDecl _ (Just P.Static) _)) = return []
 blockItem (P.D (P.VarDecl name _ (Just v))) = do
@@ -93,7 +94,7 @@ blockItem (P.D (P.VarDecl name _ (Just v))) = do
 blockItem (P.D (P.VarDecl _ _ Nothing)) = return []
 blockItem (P.D (P.FuncDecl {})) = return []
 
-statement :: P.Statement -> Counter [Instruction]
+statement :: P.Statement -> TackyMonad [Instruction]
 statement (P.Return e) = do
     (dst, is) <- expr e
     return $ is ++ [Return dst]
@@ -149,7 +150,7 @@ statement P.Null = return []
 statement (P.Case _ _) = error "Should not occur"
 statement (P.Default _) = error "Should not occur"
 
-switchStmt :: P.Expr -> P.Statement -> [Char] -> [Maybe Integer] -> Counter [Instruction]
+switchStmt :: P.Expr -> P.Statement -> [Char] -> [Maybe Integer] -> TackyMonad [Instruction]
 switchStmt e s name cases = do
     let brkLbl = "break_" ++ name
     (cond, is) <- expr e
@@ -160,7 +161,7 @@ switchStmt e s name cases = do
         else [Jump (name ++ ".default")]
     return $ is ++ concat casesIs ++ pre ++ body ++ [Label brkLbl]
 
-makeCase :: Value -> [Char] -> Integer -> Counter [Instruction]
+makeCase :: Value -> [Char] -> Integer -> TackyMonad [Instruction]
 makeCase cond name n = do
     end <- tmpLabel "end"
     dst <- Var <$> tmpVar
@@ -168,7 +169,7 @@ makeCase cond name n = do
     return $ [Binary P.Equal cond (Constant n) dst] ++ is ++ [Label end]
   where lblName = name ++ "." ++ show n
 
-initFor :: P.ForInit -> Counter [Instruction]
+initFor :: P.ForInit -> TackyMonad [Instruction]
 initFor (P.InitExpr (Just e)) = snd <$> expr e
 initFor (P.InitExpr Nothing) = return []
 initFor (P.InitDecl d) = blockItem (P.D d)
@@ -179,7 +180,7 @@ operand P.Negate = Negate
 operand P.Not = Not
 operand _ = error "Invalid unary operand!"
 
-incDec :: P.BinaryOp -> P.Expr -> Bool -> Counter (Value, [Instruction])
+incDec :: P.BinaryOp -> P.Expr -> Bool -> TackyMonad (Value, [Instruction])
 incDec op e post = do
     src <- expr e
     dst <- Var <$> tmpVar
@@ -193,7 +194,7 @@ incDec op e post = do
         [ Binary op (fst src) (Constant 1) dst
         , Copy dst (fst src)])
 
-expr :: P.Expr -> Counter (Value, [Instruction])
+expr :: P.Expr -> TackyMonad (Value, [Instruction])
 expr (P.Int c) = return (Constant c, [])
 expr (P.Unary P.PreInc e) = incDec P.Add e False
 expr (P.Unary P.PostInc e) = incDec P.Add e True
@@ -261,13 +262,13 @@ expr (P.FunctionCall name args) = do
 
 expr _ = error "Invalid expression!"
 
-tmpVar :: Counter String
+tmpVar :: TackyMonad String
 tmpVar = do
     idx <- gets (show . varCt)
     modify $ \x -> x { varCt = 1 + varCt x}
     return $ "tmp." ++ idx
 
-tmpLabel :: String -> Counter String
+tmpLabel :: String -> TackyMonad String
 tmpLabel name = do
     idx <- gets (show . labelCt)
     modify $ \x -> x { labelCt = 1 + labelCt x}

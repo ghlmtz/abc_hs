@@ -27,8 +27,7 @@ data TypeState = TypeState {
 type TypeMonad m = State TypeState m
 
 writeError :: String -> TypeMonad a
-writeError s = do
-    modify (\x -> x { err = Just s}) *> error s
+writeError s = modify (\x -> x { err = Just s}) *> error s
 
 resolveType :: Program -> Either String (Program, M.Map String (Type, IdentAttr))
 resolveType prog = do
@@ -147,7 +146,7 @@ blockVar (VarDecl _ (Just Extern) (Just _)) = writeError "Cannot initialize exte
 blockVar var@(VarDecl name (Just Extern) Nothing) = do
     syms <- gets symbols
     case M.lookup name syms of
-        Just (TFunc _ _, _) -> writeError "Function redclared as variable"
+        Just (TFunc _ _, _) -> writeError "Function redeclared as variable"
         Just _ -> return var
         _ -> do modify $ \x -> x { symbols = M.insert name (TInt, StaticAttr NoInitializer True) syms}
                 return var
