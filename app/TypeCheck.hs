@@ -3,15 +3,17 @@ module TypeCheck
   resolveType
 , IdentAttr(..)
 , InitValue(..)
+, Program
 ) where
 
-import Parse
+import qualified Parse as P
+import Parse(PType(..), Const(..), UnaryOp(..), BinaryOp(..), Storage(..))
 
 import Control.Monad.State
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isNothing)
 
-data IdentAttr = FunAttr { fDef :: Bool, fGlobal :: Bool } 
+data IdentAttr = FunAttr { fDef :: Bool, fGlobal :: Bool }
     | StaticAttr InitValue Bool | LocalAttr
     deriving (Eq, Show)
 data InitValue = Tentative | Initial Integer | NoInitializer
@@ -22,61 +24,110 @@ data TypeState = TypeState {
 , blockScope :: Bool
 , funType :: Maybe PType
 }
---data TypedExpr = TypedExpr PType Expr
+data TypedExpr = TypedExpr Expr PType
+    deriving (Show)
+data Expr = Constant Const
+          | Unary UnaryOp TypedExpr
+          | Binary BinaryOp TypedExpr TypedExpr
+          | Var String
+          | Cast PType TypedExpr
+          | Assignment TypedExpr TypedExpr
+          | CompoundAssignment BinaryOp TypedExpr TypedExpr
+          | Conditional TypedExpr TypedExpr TypedExpr
+          | FunctionCall String [Expr]
+    deriving (Show)
+data Declaration = FuncDecl { fName :: String
+                            , fArgNames :: [String]
+                            , fStorage :: Maybe Storage
+                            , fType :: PType
+                            , fBlock :: Maybe Block }
+                 | VarDecl { vName :: String
+                           , vStorage :: Maybe Storage
+                           , vType :: PType
+                           , vInit :: Maybe Expr }
+    deriving (Show)
+newtype Block = Block [BlockItem]
+    deriving (Show)
+data ForInit = InitDecl Declaration | InitExpr (Maybe Expr)
+    deriving (Show)
+data Statement = Return Expr
+               | Expression Expr
+               | Goto String
+               | Compound Block
+               | If Expr Statement (Maybe Statement)
+               | Switch Expr Statement String [Maybe Integer]
+               | Labelled String Statement
+               | Case Expr Statement
+               | Default Statement
+               | Break String
+               | Continue String
+               | While Expr Statement String
+               | DoWhile Statement Expr String
+               | For ForInit (Maybe Expr) (Maybe Expr) Statement String
+               | Null
+    deriving (Show)
+data BlockItem = S Statement | D Declaration
+    deriving (Show)
+newtype Program = Program [Declaration]
+    deriving (Show)
 
 type TypeMonad m = State TypeState m
 
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x { err = Just s}) *> error s
 
-resolveType :: Program -> Either String (Program, M.Map String (PType, IdentAttr))
+resolveType :: P.Program -> Either String (Program, M.Map String (PType, IdentAttr))
 resolveType prog = do
     let result = runState (typeProg prog) (TypeState M.empty Nothing False Nothing)
     case err (snd result) of
         Just e -> Left e
         Nothing -> Right (fst result, symbols (snd result))
 
-typeProg :: Program -> TypeMonad Program
-typeProg (Program f) = Program <$> mapM typeDecl f
+typeProg :: P.Program -> TypeMonad Program
+typeProg (P.Program f) = Program <$> mapM typeDecl f
 
-evalConstant :: Expr -> Maybe Integer
-evalConstant (Constant (ConstInt i)) = Just i
-evalConstant (Constant (ConstLong i)) = Just i
+evalConstant :: P.Expr -> Maybe Integer
+evalConstant (P.Constant (ConstInt i)) = Just i
+evalConstant (P.Constant (ConstLong i)) = Just i
 evalConstant _ = Nothing
 
-typeDecl :: Declaration -> TypeMonad Declaration
-typeDecl (FuncDecl name params s t@(TFun _ ret) (Just (Block items))) = do
+typeDecl :: P.Declaration -> TypeMonad Declaration
+typeDecl (P.FuncDecl name params s t@(TFun pTypes ret) (Just (P.Block items))) = do
     scope <- gets blockScope
     when scope $ writeError "Nested function definition"
     syms <- gets symbols
     case M.lookup name syms of
-        Just (TFun args _, FunAttr False _) -> 
-            when (length args /= length params) $ writeError "Incompatible function declaration"
+        Just (TFun args oldRet, FunAttr False _) -> do
+            when (oldRet /= ret) $ writeError "Function return type mismatch"
+            when (length args /= length pTypes) $ writeError "Incompatible function declaration"
+            when (args /= pTypes) $ writeError "Function argument type mismatch"
         Just (_, FunAttr True _) -> writeError "Function is defined more than once"
         Just _ -> writeError "Incompatible function declaration"
         Nothing -> return ()
-    let syms' = foldl(\m k -> M.insert k (TInt, LocalAttr) m) syms params
+    let syms' = foldl (\m k -> M.insert (snd k) (fst k, LocalAttr) m) syms (zip pTypes params)
     g <- funcGlobal name s
     modify $ \x -> x { symbols = M.insert name (t, FunAttr True g) syms' }
     modify $ \x -> x { blockScope = True, funType = Just ret }
     items' <- mapM typeItem items
     modify $ \x -> x { blockScope = False, funType = Nothing }
     return . FuncDecl name params s t . Just . Block $ items'
-typeDecl nothing@(FuncDecl name params s (TFun args t) Nothing) = do
+typeDecl (P.FuncDecl name params s t@(TFun pTypes ret) Nothing) = do
     syms <- gets symbols
     def <- case M.lookup name syms of
-        Just (TFun a _, FunAttr def _) -> 
-          if length a /= length params then writeError "Incompatible function declaration"
-          else return def
-            
+        Just (TFun a oldRet, FunAttr def _) -> do
+          when (oldRet /= ret) $ writeError "Function return type mismatch"
+          when (length a /= length pTypes) $ writeError "Incompatible function declaration"
+          when (a /= pTypes) $ writeError "Function argument type mismatch"
+          return def
+
         Just _ -> writeError "Incompatible function declaration"
         Nothing -> return False
     g <- funcGlobal name s
-    let syms' = foldl(\m k -> M.insert k (TInt, LocalAttr) m) syms params
-    modify $ \x -> x { symbols = M.insert name (TFun args t, FunAttr def g) syms' }
-    return nothing
-typeDecl (FuncDecl {}) = writeError "Var in fun decl"
-typeDecl var@(VarDecl {}) = do
+    let syms' = foldl (\m k -> M.insert (snd k) (fst k, LocalAttr) m) syms (zip pTypes params)
+    modify $ \x -> x { symbols = M.insert name (t, FunAttr def g) syms' }
+    return $ FuncDecl name params s t Nothing
+typeDecl (P.FuncDecl {}) = writeError "Var in fun decl"
+typeDecl var@(P.VarDecl {}) = do
     scope <- gets blockScope
     if scope then blockVar var else fileVar var
 
@@ -90,25 +141,26 @@ funcGlobal name s = do
             else return (attrGlobal at)
         Nothing -> return g
 
-fileVar :: Declaration -> TypeMonad Declaration
-fileVar var@(VarDecl name s _ initial) = do
+fileVar :: P.Declaration -> TypeMonad Declaration
+fileVar (P.VarDecl name s typ initial) = do
     let blankVal = if s == Just Extern then NoInitializer else Tentative
         value = maybe (Just blankVal) (fmap Initial . evalConstant) initial
     when (isNothing value) $ writeError "Cannot assign non-constant expr to file var"
     syms <- gets symbols
     newG <- getGlobal name s
     newV <- case M.lookup name syms of
-              Just (_, at) -> do
+              Just (oldType, at) -> do
+                when (oldType /= typ) $ writeError "Type mismatch"
                 case getConstant at of
-                    Just v -> case value of 
+                    Just v -> case value of
                         Just (Initial _) -> writeError "Conflicting file scope variable definitions"
                         _ -> return v
                     Nothing -> if not (isInitial (fromJust value)) && isTentative at
                         then return Tentative
                         else return $ fromJust value
               Nothing -> return $ fromJust value
-    modify $ \x -> x { symbols = M.insert name (TInt, StaticAttr newV newG) syms}
-    return var
+    modify $ \x -> x { symbols = M.insert name (typ, StaticAttr newV newG) syms}
+    VarDecl name s typ <$> ugly initial
 fileVar _ = error "Unreachable"
 
 isInitial :: InitValue -> Bool
@@ -134,7 +186,7 @@ getGlobal name s = do
     syms <- gets symbols
     case M.lookup name syms of
         Just (t, at) -> do
-            when (t /= TInt) $ writeError "Function redeclared as variable"
+            when (t /= TInt && t /= TLong) $ writeError "Function redeclared as variable"
             if s == Just Extern
                 then return (attrGlobal at)
                 else if attrGlobal at /= g
@@ -142,21 +194,23 @@ getGlobal name s = do
                     else return g
         Nothing -> return g
 
-blockVar :: Declaration -> TypeMonad Declaration
-blockVar (VarDecl _ (Just Extern) _ (Just _)) = writeError "Cannot initialize extern var decl"
-blockVar var@(VarDecl name (Just Extern) t Nothing) = do
+blockVar :: P.Declaration -> TypeMonad Declaration
+blockVar (P.VarDecl _ (Just Extern) _ (Just _)) = writeError "Cannot initialize extern var decl"
+blockVar (P.VarDecl name (Just Extern) typ Nothing) = do
     syms <- gets symbols
     case M.lookup name syms of
         Just (TFun {}, _) -> writeError "Function redeclared as variable"
-        Just _ -> return var
-        _ -> do modify $ \x -> x { symbols = M.insert name (t, StaticAttr NoInitializer True) syms}
-                return var
-blockVar var@(VarDecl name (Just Static) t initial) = do
+        Just (oldType, _) -> do
+            when (oldType /= typ) $ writeError "Type mismatch"
+            return $ VarDecl name (Just Extern) typ Nothing
+        _ -> do modify $ \x -> x { symbols = M.insert name (typ, StaticAttr NoInitializer True) syms}
+                return $ VarDecl name (Just Extern) typ Nothing
+blockVar (P.VarDecl name (Just Static) t initial) = do
     let value = maybe (Just 0) evalConstant initial
     when (isNothing value) $ writeError "Cannot assign non-constant expr to static var"
     modify $ \x -> x { symbols = M.insert name (t, StaticAttr (Initial (fromIntegral (fromJust value))) True) $ symbols x}
-    return var
-blockVar (VarDecl name s t initial) = do
+    VarDecl name (Just Static) t <$> ugly initial
+blockVar (P.VarDecl name s t initial) = do
     modify $ \x -> x {symbols = M.insert name (t, LocalAttr) $ symbols x}
     case initial of
         Just x -> do
@@ -165,77 +219,94 @@ blockVar (VarDecl name s t initial) = do
         Nothing -> return $ VarDecl name s t Nothing
 blockVar _ = error "Unreachable"
 
-typeItem :: BlockItem -> TypeMonad BlockItem
-typeItem (S stmt) = S <$> typeStmt stmt
-typeItem (D decl) = D <$> typeDecl decl
+typeItem :: P.BlockItem -> TypeMonad BlockItem
+typeItem (P.S stmt) = S <$> typeStmt stmt
+typeItem (P.D decl) = D <$> typeDecl decl
 
-typeStmt :: Statement -> TypeMonad Statement
-typeStmt (Labelled name stmt) = Labelled name <$> typeStmt stmt
-typeStmt (Compound (Block items)) = Compound . Block <$> mapM typeItem items
-typeStmt (If e1 s1 s2) = do
+typeStmt :: P.Statement -> TypeMonad Statement
+typeStmt (P.Labelled name stmt) = Labelled name <$> typeStmt stmt
+typeStmt (P.Compound (P.Block items)) = Compound . Block <$> mapM typeItem items
+typeStmt (P.If e1 s1 s2) = do
     e1' <- typeExpr e1
     s1' <- typeStmt s1
     s2' <- traverse typeStmt s2
     return $ If (fst e1') s1' s2'
-typeStmt (Switch e s n c) = do
+typeStmt (P.Switch e s n c) = do
     e' <- typeExpr e
     s' <- typeStmt s
     return $ Switch (fst e') s' n c
-typeStmt (Case e s) = Case . fst <$> typeExpr e <*> typeStmt s
-typeStmt (Default s) = Default <$> typeStmt s
-typeStmt (DoWhile s e n) = do
+typeStmt (P.Case e s) = Case . fst <$> typeExpr e <*> typeStmt s
+typeStmt (P.Default s) = Default <$> typeStmt s
+typeStmt (P.DoWhile s e n) = do
     s' <- typeStmt s
     e' <- typeExpr e
     return $ DoWhile s' (fst e') n
-typeStmt (While e s n) = do
+typeStmt (P.While e s n) = do
     s' <- typeStmt s
     e' <- typeExpr e
     return $ While (fst e') s' n
-typeStmt (For (InitDecl v@(VarDecl {})) e1 e2 s n) = do
+typeStmt (P.For (P.InitDecl v@(P.VarDecl {})) e1 e2 s n) = do
     v' <- blockVar v
     s' <- typeStmt s
-    return $ For (InitDecl v') e1 e2 s' n
-typeStmt (For i e1 e2 s n) = do
+    e1' <- ugly e1
+    e2' <- ugly e2
+    return $ For (InitDecl v') e1' e2' s' n
+typeStmt (P.For (P.InitExpr e) e1 e2 s n) = do
     s' <- typeStmt s
-    return $ For i e1 e2 s' n
-typeStmt (Return e) = Return . fst <$> typeExpr e
-typeStmt (Expression e) = Expression . fst <$> typeExpr e
-typeStmt s = return s
+    e' <- ugly e
+    e1' <- ugly e1
+    e2' <- ugly e2
+    return $ For (InitExpr e') e1' e2' s' n
+typeStmt (P.For {}) = writeError "Function declaration in for statement"
+typeStmt (P.Return e) = Return . fst <$> typeExpr e
+typeStmt (P.Expression e) = Expression . fst <$> typeExpr e
+typeStmt P.Null = return Null
+typeStmt (P.Goto s) = return $ Goto s
+typeStmt (P.Continue s) = return $ Continue s
+typeStmt (P.Break s) = return $ Break s
 
-typeExpr :: Expr -> TypeMonad (Expr, PType)
-typeExpr (FunctionCall name args) = do
+ugly :: Maybe P.Expr -> TypeMonad (Maybe Expr)
+ugly Nothing = return Nothing
+ugly (Just e) = fmap (Just . fst) (typeExpr e)
+
+typeExpr :: P.Expr -> TypeMonad (Expr, PType)
+typeExpr (P.FunctionCall name args) = do
     t <- gets (M.lookup name . symbols)
-    args' <- case t of 
+    args' <- case t of
             Just (TInt, _) -> writeError "Variable used as function name"
             Just (TFun r _, _) -> if length r /= length args then writeError "Wrong number of args"
                 else mapM typeExpr args
             _ -> writeError "This shouldn't happen"
     return (FunctionCall name (map fst args'), TInt)
-typeExpr (Var v) = do
+typeExpr (P.Var v) = do
     t <- gets (M.lookup v . symbols)
     case t of
         Just (TInt, _) -> return (Var v, TInt)
         Just (TLong, _) -> return (Var v, TLong)
         Nothing -> writeError $ "This probably shouldn't happen" ++ show v
         _ -> writeError "Function name used as variable"
-typeExpr (CompoundAssignment op e r) = do
+typeExpr (P.CompoundAssignment op e r) = do
     left <- typeExpr e
     right <- typeExpr r
-    return (CompoundAssignment op (fst left) (fst right), TLong)
-typeExpr (Assignment e r) = do
+    return (CompoundAssignment op (uncurry TypedExpr left) (uncurry TypedExpr right), TLong)
+typeExpr (P.Assignment e r) = do
     left <- typeExpr e
     right <- typeExpr r
-    return (Assignment (fst left) (fst right), TLong)
-typeExpr (Unary op e) = do
+    return (Assignment (uncurry TypedExpr left) (uncurry TypedExpr right), TLong)
+typeExpr (P.Unary op e) = do
     e' <- typeExpr e
-    return (Unary op (fst e'), TLong) 
-typeExpr (Binary op e1 e2) = do
+    return (Unary op (uncurry TypedExpr e'), TLong)
+typeExpr (P.Binary op e1 e2) = do
     left <- typeExpr e1
     right <- typeExpr e2
-    return (Binary op (fst left) (fst right), TLong)
-typeExpr (Conditional e1 e2 e3) = do
-    t1 <- typeExpr e1 
-    t2 <- typeExpr e2 
+    return (Binary op (uncurry TypedExpr left) (uncurry TypedExpr right), TLong)
+typeExpr (P.Conditional e1 e2 e3) = do
+    t1 <- typeExpr e1
+    t2 <- typeExpr e2
     t3 <- typeExpr e3
-    return (Conditional (fst t1) (fst t2) (fst t3), TLong)
-typeExpr e = return (e, TLong)
+    return (Conditional (uncurry TypedExpr t1) (uncurry TypedExpr t2) (uncurry TypedExpr t3), TLong)
+typeExpr (P.Constant e@(ConstInt _)) = return  (Constant e, TInt)
+typeExpr (P.Constant e@(ConstLong _)) = return (Constant e, TLong)
+typeExpr (P.Cast ty e) = do
+    t1 <- typeExpr e
+    return (Cast ty (uncurry TypedExpr t1), ty)

@@ -4,7 +4,7 @@ module Semantic
 ) where
 
 import Parse
-import TypeCheck
+import qualified TypeCheck as TC
 
 import Control.Monad.Reader
 import Control.Monad.State
@@ -49,12 +49,12 @@ initState = SemanticState {
     , nameCount = 0
     , err = Nothing}
 
-resolve :: Program -> Either String (Program, M.Map String (PType, IdentAttr))
+resolve :: Program -> Either String (TC.Program, M.Map String (PType, TC.IdentAttr))
 resolve prog = do
     let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of
         Just e -> Left e
-        Nothing -> resolveType $ fst result
+        Nothing -> TC.resolveType $ fst result
 
 gotoFunc :: Declaration -> SemanticMonad Declaration
 gotoFunc (FuncDecl name params s t (Just (Block items))) = FuncDecl name params s t . Just . Block <$> mapM gotoItem items
