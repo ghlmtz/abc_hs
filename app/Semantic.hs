@@ -49,7 +49,7 @@ initState = SemanticState {
     , nameCount = 0
     , err = Nothing}
 
-resolve :: Program -> Either String (Program, M.Map String (Type, IdentAttr))
+resolve :: Program -> Either String (Program, M.Map String (PType, IdentAttr))
 resolve prog = do
     let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of
@@ -57,7 +57,7 @@ resolve prog = do
         Nothing -> resolveType $ fst result
 
 gotoFunc :: Declaration -> SemanticMonad Declaration
-gotoFunc (FuncDecl name params s (Just (Block items))) = FuncDecl name params s . Just . Block <$> mapM gotoItem items
+gotoFunc (FuncDecl name params s t (Just (Block items))) = FuncDecl name params s t . Just . Block <$> mapM gotoItem items
 gotoFunc nothingFun = return nothingFun
 
 gotoItem :: BlockItem -> SemanticMonad BlockItem
@@ -96,16 +96,16 @@ resolveProg :: Program -> SemanticMonad Program
 resolveProg (Program f) = Program <$> mapM resolveDecl f
 
 resolveFunc :: Declaration -> SemanticMonad Declaration
-resolveFunc (FuncDecl name params t blk) = do
+resolveFunc (FuncDecl name params st t blk) = do
     gm <- gets blockVars
     level <- asks blockScope
-    when (level && t == Just Static) $ writeError "Cannot have static function at block level"
+    when (level && st == Just Static) $ writeError "Cannot have static function at block level"
     modify $ \x -> x { blockVars = M.insert name (name, True) gm }
 
     s <- gets (remap . blockVars)
     (params', blk') <- local s $ do
         modify $ \x -> x { blockVars = M.empty}
-        mapM_ (resolveDecl . (\x -> VarDecl x Nothing Nothing)) params
+        mapM_ (resolveDecl . (\x -> VarDecl x Nothing TInt Nothing)) params
         vars <- gets blockVars
         let params' = map (fst . fromJust . flip M.lookup vars) params
         blk' <- case blk of
@@ -114,7 +114,7 @@ resolveFunc (FuncDecl name params t blk) = do
         oldVars <- asks identifierMap
         modify $ \x -> x { blockVars = oldVars }
         return (params', blk')
-    g <- gotoFunc $ FuncDecl name params' t blk'
+    g <- gotoFunc $ FuncDecl name params' st t blk'
     modify $ \x -> x { labels = [] }
     return g
 resolveFunc _ = error "Hmm"
@@ -145,7 +145,7 @@ resolveForInit (InitDecl d) = do
     d' <- resolveDecl d
     case d' of
         FuncDecl {} -> writeError "Cannot declare function in for init"
-        VarDecl _ (Just _) _ -> writeError "Cannot have storage ident in for init"
+        VarDecl _ (Just _) _ _ -> writeError "Cannot have storage ident in for init"
         _ -> return $ InitDecl d'
 
 resolveFor :: Statement -> SemanticMonad Statement
@@ -164,7 +164,8 @@ newSwitchLabel :: String -> [Maybe Integer] -> LocalVars -> LocalVars
 newSwitchLabel new lbls l = l { breakLabel = Just new, switchLabel = Just new, localSwitch = lbls}
 
 evalConstant :: Expr -> SemanticMonad Integer
-evalConstant (Int i) = return i
+evalConstant (Constant (ConstInt i)) = return i
+evalConstant (Constant (ConstLong i)) = return i
 evalConstant _ = writeError "Cannot parse complicated expressions yet"
 
 resolveStmt :: Statement -> SemanticMonad Statement
@@ -224,14 +225,10 @@ resolveStmt (Switch e s _ _) = do
         return $ Switch e1 s1 label slbl
 resolveStmt (Break _) = do
     l <- asks breakLabel
-    case l of
-        Just name -> return $ Break name
-        Nothing   -> writeError "No label!"
+    maybe (writeError "No label!") (return . Break) l
 resolveStmt (Continue _) = do
     l <- asks continueLabel
-    case l of
-        Just name -> return $ Continue name
-        Nothing   -> writeError "No label!"
+    maybe (writeError "No label!") (return . Continue) l
 resolveStmt (Goto label) = return $ Goto label
 resolveStmt (Labelled name stmt) = do
     s1 <- resolveStmt stmt
@@ -247,7 +244,7 @@ writeError :: String -> SemanticMonad a
 writeError s = modify (\x -> x { err = Just s }) *> error s
 
 resolveDecl :: Declaration -> SemanticMonad Declaration
-resolveDecl (VarDecl name s initial) = do
+resolveDecl (VarDecl name s t initial) = do
     m <- gets blockVars
     inBlock <- asks blockScope
     uniq <- if not inBlock
@@ -263,8 +260,8 @@ resolveDecl (VarDecl name s initial) = do
                     modify $ \x -> x {blockVars = M.insert name (unique, s == Just Extern) m}
                     return unique
     case initial of
-        Just x  -> VarDecl uniq s . Just <$> resolveExpr x
-        Nothing -> return $ VarDecl uniq s Nothing
+        Just x  -> VarDecl uniq s t . Just <$> resolveExpr x
+        Nothing -> return $ VarDecl uniq s t Nothing
 resolveDecl fun = resolveFunc fun
 
 resolveExpr :: Expr -> SemanticMonad Expr
@@ -292,7 +289,7 @@ resolveExpr (Unary PostDec _) = writeError "Invalid lvalue!"
 resolveExpr (Unary PostInc _) = writeError "Invalid lvalue!"
 resolveExpr (Unary op e) = Unary op <$> resolveExpr e
 resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
-resolveExpr (Int i) = return (Int i)
+resolveExpr (Constant i) = return (Constant i)
 resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
 resolveExpr (FunctionCall name args) = do
     gm <- gets (M.lookup name . blockVars)
@@ -302,6 +299,7 @@ resolveExpr (FunctionCall name args) = do
         Nothing -> case lm of
                     Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
                     Nothing -> writeError $ "Undeclared function: " ++ show name
+resolveExpr (Cast t e) = Cast t <$> resolveExpr e
 
 uniqueName :: String -> SemanticMonad String
 uniqueName s = do

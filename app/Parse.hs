@@ -11,6 +11,8 @@ module Parse
 , BlockItem(..)
 , Program(..)
 , Storage(..)
+, PType(..)
+, Const(..)
 ) where
 
 import Lex (CToken)
@@ -38,24 +40,26 @@ data Expr = Constant Const
           | Unary UnaryOp Expr
           | Binary BinaryOp Expr Expr
           | Var String
-          | Cast Type Expr
+          | Cast PType Expr
           | Assignment Expr Expr
           | CompoundAssignment BinaryOp Expr Expr
           | Conditional Expr Expr Expr
           | FunctionCall String [Expr]
     deriving (Show)
 data Declaration = FuncDecl { fName :: String
-                            , fParams :: [String]
+                            , fArgNames :: [String]
                             , fStorage :: Maybe Storage
-                            , fType :: Type
+                            , fType :: PType
                             , fBlock :: Maybe Block }
                  | VarDecl { vName :: String
                            , vStorage :: Maybe Storage
-                           , vType :: Type
+                           , vType :: PType
                            , vInit :: Maybe Expr }
     deriving (Show)
-data Type = TInt | TLong | TFun [Type] Type
-    deriving (Show)
+data PType = TInt | TLong 
+    | TFun { fArgTypes :: [PType]
+           , fRet :: PType }
+    deriving (Show, Eq)
 newtype Block = Block [BlockItem]
     deriving (Show)
 data ForInit = InitDecl Declaration | InitExpr (Maybe Expr)
@@ -109,17 +113,17 @@ function = do
         t = if long then TLong else TInt
     return $ FuncDecl name names storage (TFun types t) body
 
-params :: TokenParser [(Type, String)]
+params :: TokenParser [(PType, String)]
 params = [] <$ isToken L.Void
      <|> sepBy1 param (isToken L.Comma)
 
-param :: TokenParser (Type, String)
+param :: TokenParser (PType, String)
 param = do
     t <- some (isToken L.Int <|> isToken L.Long)
     i <- getIdent
     return (checkType t, i)
 
-checkType :: [CToken] -> Type
+checkType :: [CToken] -> PType
 checkType [L.Int] = TInt
 checkType [L.Long] = TLong
 checkType [L.Int, L.Long] = TLong
