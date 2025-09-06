@@ -32,17 +32,29 @@ data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
     deriving (Show, Eq)
 data Storage = Static | Extern
     deriving (Show, Eq)
-data Expr = Int Integer
-           | Unary UnaryOp Expr
-           | Binary BinaryOp Expr Expr
-           | Var String
-           | Assignment Expr Expr
-           | CompoundAssignment BinaryOp Expr Expr
-           | Conditional Expr Expr Expr
-           | FunctionCall String [Expr]
+data Const = ConstInt Integer | ConstLong Integer
     deriving (Show)
-data Declaration = FuncDecl String [String] (Maybe Storage) (Maybe Block) 
-                 | VarDecl String (Maybe Storage) (Maybe Expr) 
+data Expr = Constant Const
+          | Unary UnaryOp Expr
+          | Binary BinaryOp Expr Expr
+          | Var String
+          | Cast Type Expr
+          | Assignment Expr Expr
+          | CompoundAssignment BinaryOp Expr Expr
+          | Conditional Expr Expr Expr
+          | FunctionCall String [Expr]
+    deriving (Show)
+data Declaration = FuncDecl { fName :: String
+                            , fParams :: [String]
+                            , fStorage :: Maybe Storage
+                            , fType :: Type
+                            , fBlock :: Maybe Block }
+                 | VarDecl { vName :: String
+                           , vStorage :: Maybe Storage
+                           , vType :: Type
+                           , vInit :: Maybe Expr }
+    deriving (Show)
+data Type = TInt | TLong | TFun [Type] Type
     deriving (Show)
 newtype Block = Block [BlockItem]
     deriving (Show)
@@ -70,20 +82,17 @@ newtype Program = Program [Declaration]
     deriving (Show)
 
 parser :: [CToken] -> MayError Program
-parser toks = case parse (program <* eof) "abc_parse" toks of
-        Left e -> Left (show e)
-        Right e -> Right e
+parser = either (Left . show) Right . parse (program <* eof) "abc_parse"
 
 isToken :: MonadParsec e s m => Token s -> m (Token s)
 isToken t = satisfy (== t)
 
-getIdent :: CToken -> String
-getIdent (L.Identifier x) = x
-getIdent _ = ""
-
-isIdent :: CToken -> Bool
-isIdent (L.Identifier _) = True
-isIdent _ = False
+getIdent :: TokenParser String
+getIdent = getStr <$> satisfy isIdent
+    where getStr (L.Identifier x) = x
+          getStr _ = error "Impossible"
+          isIdent (L.Identifier _) = True
+          isIdent _ = False
 
 program :: TokenParser Program
 program = Program <$> many declaration
@@ -91,26 +100,37 @@ program = Program <$> many declaration
 function :: TokenParser Declaration
 function = do
     specs <- some specifier
-    name <- satisfy isIdent
+    name <- getIdent
     ps <- isToken L.LeftParen *> params <* isToken L.RightParen
     body <- (Just <$> block) <|> (isToken L.Semicolon >> return Nothing)
-    let s = foldl foldSpec (False, Nothing) specs
-    return $ FuncDecl (getIdent name) ps (snd s) body
+    let (_, long, storage) = foldl foldSpec (False, False, Nothing) specs
+        types = map fst ps
+        names = map snd ps
+        t = if long then TLong else TInt
+    return $ FuncDecl name names storage (TFun types t) body
 
-params :: TokenParser [String]
-params = (isToken L.Void >> return [])
-     <|> args
-  where args = do
-         names <- sepBy1 (isToken L.Int *> satisfy isIdent) (isToken L.Comma)
-         return $ map getIdent names
+params :: TokenParser [(Type, String)]
+params = [] <$ isToken L.Void
+     <|> sepBy1 param (isToken L.Comma)
+
+param :: TokenParser (Type, String)
+param = do
+    t <- some (isToken L.Int <|> isToken L.Long)
+    i <- getIdent
+    return (checkType t, i)
+
+checkType :: [CToken] -> Type
+checkType [L.Int] = TInt
+checkType [L.Long] = TLong
+checkType [L.Int, L.Long] = TLong
+checkType [L.Long, L.Int] = TLong
+checkType _ = error "Invalid type specifier"
 
 blockItem :: TokenParser BlockItem
 blockItem = D <$> declaration <|> S <$> statement
 
 block :: TokenParser Block
-block = do
-    items <- isToken L.LeftBrace *> many blockItem <* isToken L.RightBrace
-    return $ Block items
+block = Block <$> (isToken L.LeftBrace *> many blockItem <* isToken L.RightBrace)
 
 declaration :: TokenParser Declaration
 declaration = try variable <|> function
@@ -118,43 +138,44 @@ declaration = try variable <|> function
 variable :: TokenParser Declaration
 variable = do
     specs <- some specifier
-    name <- satisfy isIdent
+    name <- getIdent
     assign <- optional (isToken L.Equal *> expr)
     _ <- isToken L.Semicolon
-    let s = foldl foldSpec (False, Nothing) specs
-    if not $ fst s then error "No type" else
-        return $ VarDecl (getIdent name) (snd s) assign
+    let (nt, long, storage) = foldl foldSpec (False, False, Nothing) specs
+        t = if long then TLong else TInt
+    if not (nt || long) then error "No type" else
+        return $ VarDecl name storage t assign
 
-foldSpec :: (Bool, Maybe Storage) ->  (Bool, Maybe Storage) -> (Bool, Maybe Storage)
-foldSpec (True, _) (True, _) = error "Invalid specifier"
-foldSpec (False, s) (True, _) = (True, s)
-foldSpec (t, Nothing) (_, Just x) = (t, Just x)
+foldSpec :: (Bool, Bool, Maybe Storage) ->  (Bool, Bool, Maybe Storage) -> (Bool, Bool, Maybe Storage)
+foldSpec (False, b, c) (True, _, _) = (True, b, c)
+foldSpec (a, False, c) (_, True, _) = (a, True, c)
+foldSpec (a, b, Nothing) (_, _, Just x) = (a, b, Just x)
 foldSpec _ _ = error "Invalid specifier"
 
-specifier :: TokenParser (Bool, Maybe Storage)
-specifier = 
-        (True, Nothing) <$ isToken L.Int
-    <|> (False, Just Static) <$ isToken L.Static
-    <|> (False, Just Extern) <$ isToken L.Extern
+specifier :: TokenParser (Bool, Bool, Maybe Storage)
+specifier =
+        (True, False, Nothing) <$ isToken L.Int
+    <|> (False, True, Nothing) <$ isToken L.Long
+    <|> (False, False, Just Static) <$ isToken L.Static
+    <|> (False, False, Just Extern) <$ isToken L.Extern
 
 statement :: TokenParser Statement
 statement = try labelStmt
         <|> Compound <$> block
-        <|> ret <|> ifStmt <|> goto
+        <|> Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
+        <|> ifStmt <|> goto
         <|> Expression <$> expr <* isToken L.Semicolon
-        <|> semicolon <|> breakStmt <|> continueStmt
+        <|> Null <$ isToken L.Semicolon
+        <|> breakStmt <|> continueStmt
         <|> whileStmt <|> doWhileStmt <|> forStmt
         <|> switchStmt <|> caseStmt <|> defaultStmt
-    where semicolon = do
-            _ <- isToken L.Semicolon
-            return Null
-          ret = Return <$> (isToken L.Return *> expr <* isToken L.Semicolon)
+    where
           labelStmt = do
-            s <- satisfy isIdent <* isToken L.Colon
-            Labelled (getIdent s) <$> statement
+            s <- getIdent <* isToken L.Colon
+            Labelled s <$> statement
           goto = do
-            s <- isToken L.Goto *> satisfy isIdent <* isToken L.Semicolon
-            return $ Goto (getIdent s)
+            s <- isToken L.Goto *> getIdent <* isToken L.Semicolon
+            return $ Goto s
 
 switchStmt :: TokenParser Statement
 switchStmt = do
@@ -202,11 +223,8 @@ doWhileStmt = do
     return $ DoWhile s e ""
 
 forInit :: TokenParser ForInit
-forInit = do
-    InitDecl <$> variable
-    <|> do
-        e <- optional expr <* isToken L.Semicolon
-        return $ InitExpr e
+forInit = InitDecl <$> variable
+      <|> InitExpr <$> optional expr <* isToken L.Semicolon
 
 forStmt :: TokenParser Statement
 forStmt = do
@@ -231,26 +249,26 @@ ternary = do
 term :: TokenParser Expr
 term = do
     t <- term'
-    un <- optional (many unaryPostfix)
-    case un of
-        Just post -> return $ applyUnary post t
-        Nothing   -> return t
-  where applyUnary [] t = t
-        applyUnary (p:ps) t = applyUnary ps (Unary p t)
+    maybe t (foldr Unary t) <$> optional (many unaryPostfix)
 
 term' :: TokenParser Expr
 term' = constant
-   <|> var
-   <|> unary
-   <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
+    <|> lConstant
+    <|> var
+    <|> unary
+    <|> try cast
+    <|> between (isToken L.LeftParen) (isToken L.RightParen) expr
+
+cast :: TokenParser Expr
+cast = do
+    t <- between (isToken L.LeftParen) (isToken L.RightParen) $ some (isToken L.Int <|> isToken L.Long)
+    Cast (checkType t) <$> term
 
 var :: TokenParser Expr
 var = do
-    ident <- satisfy isIdent
-    call <- optional (isToken L.LeftParen *> sepBy expr (isToken L.Comma) <* isToken L.RightParen) 
-    return $ case call of
-        Just calls -> FunctionCall (getIdent ident) calls
-        Nothing -> Var (getIdent ident)
+    ident <- getIdent
+    call <- optional (isToken L.LeftParen *> sepBy expr (isToken L.Comma) <* isToken L.RightParen)
+    return $ maybe (Var ident) (FunctionCall ident) call
 
 constant :: TokenParser Expr
 constant = do
@@ -258,26 +276,31 @@ constant = do
         isConstant _ = False
         getConstant (L.Constant x) = x
         getConstant _ = 0
-    Int . getConstant <$> satisfy isConstant
+    c <- satisfy isConstant
+    return $ if getConstant c + 1 > (^) (2 :: Integer) (31 :: Integer)
+        then Constant (ConstLong (getConstant c))
+        else Constant (ConstInt (getConstant c))
+
+lConstant :: TokenParser Expr
+lConstant = do
+    let isConstant (L.LConstant _) = True
+        isConstant _ = False
+        getConstant (L.LConstant x) = x
+        getConstant _ = 0
+    Constant . ConstLong . getConstant <$> satisfy isConstant
 
 unaryPostfix :: TokenParser UnaryOp
-unaryPostfix = do
-    tok <- isToken L.PlusPlus <|> isToken L.MinusMinus
-    return $ case tok of
-                  L.PlusPlus -> PostInc
-                  L.MinusMinus -> PostDec
-                  _ -> error "Invalid token"
+unaryPostfix = PostInc <$ isToken L.PlusPlus
+           <|> PostDec <$ isToken L.MinusMinus
 
 unary :: TokenParser Expr
 unary = do
-    tok <- isToken L.PlusPlus <|> isToken L.MinusMinus <|> isToken L.Minus <|> isToken L.Tilde <|> isToken L.Bang
-    let start = case tok of
-                    L.PlusPlus -> PreInc
-                    L.MinusMinus -> PreDec
-                    L.Minus -> Negate
-                    L.Bang  -> Not
-                    _     -> Complement
-    Unary start <$> term
+    tok <- PreInc <$ isToken L.PlusPlus
+       <|> PreDec <$ isToken L.MinusMinus
+       <|> Negate <$ isToken L.Minus
+       <|> Complement <$ isToken L.Tilde
+       <|> Not <$ isToken L.Bang
+    Unary tok <$> term
 
 precedence :: [[Operator TokenParser Expr]]
 precedence = [ [ binary  L.Star         (Binary Multiply)

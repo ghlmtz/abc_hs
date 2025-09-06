@@ -8,12 +8,14 @@ import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
 import Data.Void (Void)
+import Data.Maybe (fromMaybe)
 
 type Parser = Parsec Void String
-type MayError = Either String 
+type MayError = Either String
 
 data CToken = Identifier String
            | Constant Integer
+           | LConstant Integer
            | LeftParen
            | RightParen
            | LeftBrace
@@ -33,14 +35,12 @@ data CToken = Identifier String
            | If | Else | Question | Colon | Goto
            | Break | Continue | Do | For | While
            | Case | Default | Switch | Comma
-           | Static | Extern
+           | Static | Extern | Long
     deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
-lexer input = do
-    case parse (skipSpace *> manyTill (parseFile <* optional skipSpace) eof) "abc_lexer" input of
-        Left e -> Left $ errorBundlePretty e
-        Right e -> Right e
+lexer = either (Left . errorBundlePretty) Right . parse pattern "abc_lexer"
+    where pattern = skipSpace *> manyTill (parseFile <* optional skipSpace) eof
 
 skipSpace :: Parser ()
 skipSpace = L.space
@@ -49,22 +49,24 @@ skipSpace = L.space
   (L.skipBlockCommentNested "/*" "*/")
 
 parseFile :: Parser CToken
-parseFile = do
-        parseIdent
-    <|> parseConstant
-    <|> parseSymbols
+parseFile = parseIdent
+        <|> parseConstant
+        <|> parseSymbols
 
 parseIdent :: Parser CToken
 parseIdent = do
     first <- letterChar <|> char '_'
     rest <- many (alphaNumChar <|> char '_')
     let s = first : rest
-    return $ case lookup s reserved of
-        Just x -> x
-        Nothing -> Identifier s
+    return $ fromMaybe (Identifier s) $ lookup s reserved
 
 parseConstant :: Parser CToken
-parseConstant = Constant . read <$> some digitChar <* notFollowedBy (letterChar <|> char '_')
+parseConstant = do
+    digits <- some digitChar
+    long <- optional (char 'l' <|> char 'L') <* notFollowedBy (letterChar <|> char '_')
+    return $ case long of
+                Nothing -> Constant (read digits)
+                _ -> LConstant (read digits)
 
 parseSymbols :: Parser CToken
 parseSymbols = choice $ map (try . uncurry multiChar) multiChars
@@ -95,7 +97,7 @@ singleChars = [
     (',', Comma)]
 
 singleChar :: Char -> CToken -> Parser CToken
-singleChar c t = char c >> pure t
+singleChar c t = t <$ char c
 
 reserved :: [] (String, CToken)
 reserved = [
@@ -110,6 +112,7 @@ reserved = [
     ("goto", Goto),
     ("if", If),
     ("int", Int),
+    ("long", Long),
     ("return", Return),
     ("static", Static),
     ("switch", Switch),
@@ -140,4 +143,4 @@ multiChars = [
     ("^=", XorEqual)]
 
 multiChar :: String -> CToken -> Parser CToken
-multiChar c t = string c >> return t
+multiChar c t = t <$ string c
