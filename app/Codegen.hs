@@ -6,11 +6,11 @@ module Codegen
 import qualified Tacky as T
 import qualified Parse as P
 
-import Control.Monad.State
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
 import TypeCheck
 import qualified Data.Map as M
+import Control.Monad.RWS
 
 newtype Program = Program [TopLevel]
 data TopLevel = FuncDef String Bool [Instruction]
@@ -44,9 +44,11 @@ data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11
 
 data CodeState = CodeState {
   varList :: [String]
-, symbols :: M.Map String (Type, IdentAttr)
 }
-type CodeMonad = State CodeState
+data CodeReader = CodeReader {
+  symbols :: M.Map String (Type, IdentAttr)
+}
+type CodeMonad = RWS CodeReader [Instruction] CodeState
 type MayError = Either String
 
 instance Show CondCode where show = showCode
@@ -110,9 +112,9 @@ showGlobal s True = "\t.globl " ++ s ++ "\n"
 showGlobal _ False = ""
 
 showTopLevel :: TopLevel -> [Char]
-showTopLevel (FuncDef s global is) = 
+showTopLevel (FuncDef s global is) =
     showGlobal s global ++ "\t.text\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . show) is
-showTopLevel (StaticVar s global initial) = 
+showTopLevel (StaticVar s global initial) =
     let dat = if initial == 0 then "\t.bss\n" else "\t.data\n"
         i = if initial == 0 then ":\n\t.zero 4" else ":\n\t.long " ++ show initial in
     showGlobal s global ++ dat ++ "\t.align 4\n" ++ s ++ i ++ "\n"
@@ -138,71 +140,72 @@ showProgram :: Program -> [Char]
 showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
 genCode :: (T.TackyProg, M.Map String (Type, IdentAttr)) -> MayError Program
-genCode (prog, syms) = pure $ evalState (pass1 prog) $ CodeState [] syms
+genCode (prog, syms) = pure $ fst $ evalRWS (pass1 prog) (CodeReader syms) (CodeState [])
 
 pass1 :: T.TackyProg -> CodeMonad Program
 pass1 (T.TackyProg f) = Program <$> mapM topLevel f
 
 topLevel :: T.TopLevel -> CodeMonad TopLevel
 topLevel (T.FuncDef name global params stmt) = do
-    paramInts <- parseParams 0 params
-    mapStmt <- mapM statement stmt
+    (_, parsedStmts) <- listen $ do
+        zipWithM_ parseParams [0..] params
+        mapM_ statement stmt
     len <- gets (length . varList)
     let s = negate $ (+4) $ convertIdx len
         s' = ((s - s `mod` 16) ` div` 16) * 16 + 16
-    return $ FuncDef name global (AllocateStack s' : paramInts ++ concat mapStmt)
+    return $ FuncDef name global (AllocateStack s' : parsedStmts)
 topLevel (T.StaticVar name global initial) = return $ StaticVar name global initial
 
 regs :: [Operand]
 regs = [Reg DI, Reg SI, Reg DX, Reg CX, Reg R8, Reg R9]
 
-parseParams :: Int -> [String] -> CodeMonad [Instruction]
-parseParams _ [] = return []
-parseParams n (x:xs)
-    | n < 6 = do
-        e <- expr (T.Var x)
-        p <- parseParams (n+1) xs
-        return $ Mov (regs !! n) e : p
-    | otherwise = do
-        e <- expr (T.Var x)
-        p <- parseParams (n+1) xs
-        return $ fixMov (Stack ((fromIntegral n - 6) * 8 + 16)) e ++ p
+parseParams :: Int -> String -> CodeMonad ()
+parseParams n x = do
+    e <- expr (T.Var x)
+    if n < 6
+        then tell [Mov (regs !! n) e]
+        else fixMov (Stack ((fromIntegral n - 6) * 8 + 16)) e
 
-fixCmp :: Operand -> Operand -> [Instruction]
+fixCmp :: Operand -> Operand -> CodeMonad ()
 fixCmp v1 v2 = do
     let v1' = if isStack v1 then Reg R10 else v1
         v2' = if isConstant v2 then Reg R11 else v2
-        v1_int = ([Mov v1 (Reg R10) | isStack v1])
-        v2_int = ([Mov v2 (Reg R11) | isConstant v2])
-    v1_int ++ v2_int ++ [Cmp v1' v2']
+    tell $ [Mov v1 (Reg R10) | isStack v1] ++ [Mov v2 (Reg R11) | isConstant v2] ++ [Cmp v1' v2']
 
-statement :: T.Instruction -> CodeMonad [Instruction]
+statement :: T.Instruction -> CodeMonad ()
 statement (T.Return e) = do
     e' <- expr e
-    return [Mov e' (Reg AX), Ret]
+    tell [Mov e' (Reg AX), Ret]
 statement (T.Unary T.Not src dst) = do
     src' <- expr src
     dst' <- expr dst
-    return $ fixCmp (Imm 0) src' ++ [Mov (Imm 0) dst', SetCC E dst']
+    fixCmp (Imm 0) src'
+    tell [Mov (Imm 0) dst', SetCC E dst']
 statement (T.Unary op src dst) = do
     src' <- expr src
     dst' <- expr dst
-    return $ fixMov src' dst' ++ [Unary (operand op) dst']
-statement (T.Binary op s1 s2 dst) =
-    binaryOp op <$> expr s1 <*> expr s2 <*> expr dst
-statement (T.Jump target) = return [Jmp target]
+    fixMov src' dst'
+    tell [Unary (operand op) dst']
+statement (T.Binary op s1 s2 dst) = do
+    s1' <- expr s1
+    s2' <- expr s2
+    dst' <- expr dst
+    binaryOp op s1' s2' dst'
+statement (T.Jump target) = tell [Jmp target]
 statement (T.JZero cond target) = do
-    cond' <- expr cond
-    return $ fixCmp (Imm 0) cond' ++ [JmpCC E target]
+    fixCmp (Imm 0) =<< expr cond
+    tell [JmpCC E target]
 statement (T.JNZero cond target) = do
-    cond' <- expr cond
-    return $ fixCmp (Imm 0) cond' ++ [JmpCC NE target]
-statement (T.Label lbl) = return [Label lbl]
-statement (T.Copy src dst) =
-    fixMov <$> expr src <*> expr dst
+    fixCmp (Imm 0) =<< expr cond
+    tell [JmpCC NE target]
+statement (T.Label lbl) = tell [Label lbl]
+statement (T.Copy src dst) = do
+    src' <- expr src
+    dst' <- expr dst
+    fixMov src' dst'
 statement (T.FunctionCall name args dst) = funCall name args dst
 
-funCall :: String -> [T.Value] -> T.Value -> CodeMonad [Instruction]
+funCall :: String -> [T.Value] -> T.Value -> CodeMonad ()
 funCall name args dst = do
     let regArgs = take 6 args
         stackArgs = reverse $ drop 6 args
@@ -210,24 +213,25 @@ funCall name args dst = do
         start = [AllocateStack padding | padding > 0]
         remove = padding + 8 * fromIntegral (length stackArgs)
         dealloc = [DeallocStack remove | remove > 0]
-    is <- mapM resolveReg $ zip regArgs regs
-    stackIs <- mapM resolveStack stackArgs
     eDst <- expr dst
-    return $ start ++ is ++ concat stackIs ++ [Call name] ++ dealloc ++ [Mov (Reg AX) eDst]
+    tell start
+    mapM_ resolveReg $ zip regArgs regs
+    mapM_ resolveStack stackArgs
+    tell $ [Call name] ++ dealloc ++ [Mov (Reg AX) eDst]
 
-resolveReg :: (T.Value, Operand) -> CodeMonad Instruction
+resolveReg :: (T.Value, Operand) -> CodeMonad ()
 resolveReg (v,r) = do
     e <- expr v
-    return $ Mov e r
+    tell [Mov e r]
 
-resolveStack :: T.Value -> CodeMonad [Instruction]
+resolveStack :: T.Value -> CodeMonad ()
 resolveStack v = do
     e <- expr v
-    if isStack e then
-        return [Mov e (Reg AX), Push (Reg8 AX)]
-    else return [Push e]
+    tell $ if isStack e
+        then [Mov e (Reg AX), Push (Reg8 AX)]
+        else [Push e]
 
-binaryOp :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
+binaryOp :: P.BinaryOp -> Operand -> Operand -> Operand -> CodeMonad ()
 binaryOp op
     | op == P.Divide || op == P.Remainder = divide (if op == P.Divide then AX else DX)
     | op == P.LeftShift || op == P.RightShift = shift op
@@ -245,42 +249,43 @@ condCode P.LessEqual = LE
 condCode P.GreaterThan = G
 condCode _ = error "Invalid binary operand"
 
-relational :: CondCode -> Operand -> Operand -> Operand -> [Instruction]
-relational op s1 s2 dst = fixCmp s2 s1 ++ [Mov (Imm 0) dst, SetCC op dst]
+relational :: CondCode -> Operand -> Operand -> Operand -> CodeMonad ()
+relational op s1 s2 dst = fixCmp s2 s1 >> tell [Mov (Imm 0) dst, SetCC op dst]
 
-fixMov :: Operand -> Operand -> [Instruction]
-fixMov src dst = if isStack src && isStack dst
-                 then [Mov src (Reg R10), Mov (Reg R10) dst]
-                 else [Mov src dst]
+fixMov :: Operand -> Operand -> CodeMonad ()
+fixMov src dst = tell $ if isStack src && isStack dst
+                        then [Mov src (Reg R10), Mov (Reg R10) dst]
+                        else [Mov src dst]
 
-genericBinary :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
+genericBinary :: P.BinaryOp -> Operand -> Operand -> Operand -> CodeMonad ()
 genericBinary op s1 s2 dst = do
-    let cmd = if isStack s2 && isStack dst
+    fixMov s1 dst
+    tell $ if isStack s2 && isStack dst
               then [Mov s2 (Reg R10), Binary (binOp op) (Reg R10) dst]
               else [Binary (binOp op) s2 dst]
-    fixMov s1 dst ++ cmd
 
-divide :: Register -> Operand -> Operand -> Operand -> [Instruction]
+divide :: Register -> Operand -> Operand -> Operand -> CodeMonad ()
 divide rx s1 s2 dst = do
-    let d = case s2 of
+    tell [Mov s1 (Reg AX), Cdq]
+    tell $ case s2 of
           Imm _ -> [Mov s2 (Reg R10), IDiv (Reg R10)]
           _     -> [IDiv s2]
-    [Mov s1 (Reg AX), Cdq] ++ d ++ [Mov (Reg rx) dst]
+    tell [Mov (Reg rx) dst]
 
-foo :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
+foo :: P.BinaryOp -> Operand -> Operand -> Operand -> CodeMonad ()
 foo op s1 s2 dst = do
-    let cmd = if isStack dst
+    fixMov s1 dst
+    tell $ if isStack dst
               then [Mov dst (Reg R11), Binary (binOp op) s2 (Reg R11), Mov (Reg R11) dst]
               else [Binary (binOp op) s2 dst]
-    fixMov s1 dst ++ cmd
 
-shift :: P.BinaryOp -> Operand -> Operand -> Operand -> [Instruction]
+shift :: P.BinaryOp -> Operand -> Operand -> Operand -> CodeMonad ()
 shift op s1 s2 dst = do
     let s2_int = ([MovB s2 (Reg1 CX) | isStack s2])
         s2'' = if isStack s2 then Reg1 CX else s2
-
-    fixMov s1 dst ++ s2_int ++
-        if isStack dst
+    fixMov s1 dst
+    tell s2_int
+    tell $ if isStack dst
         then [Mov dst (Reg R11), Binary (binOp op) s2'' (Reg R11), Mov (Reg R11) dst]
         else [Binary (binOp op) s2'' dst]
 
@@ -313,11 +318,11 @@ expr :: T.Value -> CodeMonad Operand
 expr (T.Constant i) = return $ Imm i
 expr (T.Var v) = do
     s <- gets varList
-    syms <- gets symbols
+    syms <- asks symbols
     case M.lookup v syms of
         Just (_, StaticAttr {}) -> return (Data v)
         _ -> if v `elem` s then return $ Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
-                else do 
+                else do
                     modify $ \x -> x {varList = s ++ [v]}
                     return (Stack $ convertIdx $ length s)
 
