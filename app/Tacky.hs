@@ -63,13 +63,12 @@ scan (P.Program f) = TackyProg <$> mapM funcDef (filter fil f)
           fil _ = False
 
 funcDef :: P.Declaration -> Counter TopLevel
-funcDef (P.FuncDecl name params _ (Just (P.Block items))) = do
+funcDef (P.FuncDecl name params _ block) = do
     g <- attrGlobal name
-    (_, is) <- listen (mapM blockItem (items ++ [P.S (P.Return (P.Int 0))]))
-    return $ FuncDef name g params is
-funcDef (P.FuncDecl name params _ Nothing) = do
-    g <- attrGlobal name
-    return $ FuncDef name g params []
+    FuncDef name g params <$> case block of 
+        Just (P.Block items) -> 
+            snd <$> listen (mapM blockItem (items ++ [P.S (P.Return (P.Int 0))]))
+        Nothing -> return []        
 funcDef _ = return $ StaticVar [] False 0
 
 attrGlobal :: String -> Counter Bool
