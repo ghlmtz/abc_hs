@@ -1,3 +1,4 @@
+{-# LANGUAGE InstanceSigs #-}
 module Parse
 (
   parser
@@ -13,6 +14,7 @@ module Parse
 , Storage(..)
 , PType(..)
 , Const(..)
+, StaticInit(..)
 ) where
 
 import Lex (CToken)
@@ -21,9 +23,18 @@ import qualified Lex as L
 import Text.Megaparsec
 import Control.Monad.Combinators.Expr
 import Data.Void (Void)
+import Data.Int
 
 type TokenParser = Parsec Void [CToken]
 type MayError = Either String
+
+data StaticInit = IntInit Int32 | LongInit Int64
+    deriving (Eq)
+instance Show StaticInit where show :: StaticInit -> String
+                               show = showStatic
+showStatic :: StaticInit -> String
+showStatic (IntInit x) = show x
+showStatic (LongInit x) = show x ++ "L"
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
     deriving (Show)
@@ -35,7 +46,7 @@ data BinaryOp = Add | Subtract | Multiply | Divide | Remainder
 data Storage = Static | Extern
     deriving (Show, Eq)
 data Const = ConstInt Integer | ConstLong Integer
-    deriving (Show)
+    deriving (Show, Eq)
 data Expr = Constant Const
           | Unary UnaryOp Expr
           | Binary BinaryOp Expr Expr
@@ -69,7 +80,7 @@ data Statement = Return Expr
                | Goto String
                | Compound Block
                | If Expr Statement (Maybe Statement)
-               | Switch Expr Statement String [Maybe Integer]
+               | Switch Expr Statement String [Maybe StaticInit]
                | Labelled String Statement
                | Case Expr Statement
                | Default Statement

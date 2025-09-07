@@ -9,7 +9,7 @@ import qualified TypeCheck as TC
 import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as M
-import Data.Maybe (isJust, fromJust)
+import Data.Maybe (isJust, fromJust, isNothing)
 
 type SemanticMonad m = ReaderT LocalVars (State SemanticState) m
 type IdentMap = M.Map String (String, Bool)
@@ -19,7 +19,7 @@ data SemanticState = SemanticState {
 , labels :: [(String, String)]
 , nameCount  :: Int
 , err :: Maybe String
-, switchLabels :: [Maybe Integer]
+, switchLabels :: [Maybe StaticInit]
 }
 
 data LocalVars = LocalVars {
@@ -27,7 +27,7 @@ data LocalVars = LocalVars {
     breakLabel :: Maybe String,
     continueLabel :: Maybe String,
     switchLabel :: Maybe String,
-    localSwitch :: [Maybe Integer],
+    localSwitch :: [Maybe StaticInit],
     blockScope :: Bool
 }
 
@@ -160,13 +160,13 @@ resolveFor _ = error "Shouldn't happen"
 newLoopLabel :: String -> LocalVars -> LocalVars
 newLoopLabel new l = l { breakLabel = Just new, continueLabel = Just new }
 
-newSwitchLabel :: String -> [Maybe Integer] -> LocalVars -> LocalVars
+newSwitchLabel :: String -> [Maybe StaticInit] -> LocalVars -> LocalVars
 newSwitchLabel new lbls l = l { breakLabel = Just new, switchLabel = Just new, localSwitch = lbls}
 
-evalConstant :: Expr -> SemanticMonad Integer
-evalConstant (Constant (ConstInt i)) = return i
-evalConstant (Constant (ConstLong i)) = return i
-evalConstant _ = writeError "Cannot parse complicated expressions yet"
+evalConstant :: Expr -> Maybe StaticInit
+evalConstant (Constant (ConstInt i)) = Just (IntInit (fromIntegral i))
+evalConstant (Constant (ConstLong i)) = Just (LongInit (fromIntegral i))
+evalConstant _ = Nothing
 
 resolveStmt :: Statement -> SemanticMonad Statement
 resolveStmt (Return e) = Return <$> resolveExpr e
@@ -190,14 +190,16 @@ resolveStmt (DoWhile s e _) = do
         return $ DoWhile s1 e1 label
 resolveStmt (Case e s) = do
     l <- asks switchLabel
-    n <- evalConstant =<< resolveExpr e
+    n <- resolveExpr e
     s1 <- resolveStmt s
+    let n' = evalConstant n
+    when (isNothing n') $ writeError "Non-constant case expression"
     case l of
         Just l' -> do
             lbls <- gets switchLabels
-            when (Just n `elem` lbls) $ writeError "Duplicate case!"
-            modify $ \x -> x { switchLabels = Just n : lbls}
-            return $ Labelled (l' ++ "." ++ show n) s1
+            when (n' `elem` lbls) $ writeError "Duplicate case!"
+            modify $ \x -> x { switchLabels = n' : lbls}
+            return $ Labelled (l' ++ "." ++ show (fromJust n')) s1
         Nothing   -> writeError "Not in switch!"
 resolveStmt (Default s) = do
     l <- asks switchLabel
