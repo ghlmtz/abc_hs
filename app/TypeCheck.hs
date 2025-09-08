@@ -11,7 +11,7 @@ import Semantic
 
 import Control.Monad.State
 import qualified Data.Map as M
-import Data.Maybe (fromJust, isNothing)
+import Data.Maybe (fromJust, isNothing, catMaybes)
 
 data Type = TInt | TFunc Int Bool
     deriving (Eq, Show)
@@ -39,13 +39,13 @@ resolveType prog = do
         Nothing -> Right (fst result, symbols (snd result))
 
 typeProg :: SProgram -> TypeMonad SProgram
-typeProg (SProgram f) = SProgram <$> mapM typeDecl f
+typeProg (SProgram f) = SProgram . catMaybes <$> mapM typeDecl f
 
 evalConstant :: Expr -> Maybe Integer
 evalConstant (Int i) = Just i
 evalConstant _ = Nothing
 
-typeDecl :: Declaration -> TypeMonad Declaration
+typeDecl :: Declaration -> TypeMonad (Maybe Declaration)
 typeDecl (FuncDecl name params s (Just (Block items))) = do
     scope <- gets blockScope
     when scope $ writeError "Nested function definition"
@@ -63,8 +63,8 @@ typeDecl (FuncDecl name params s (Just (Block items))) = do
     modify $ \x -> x { blockScope = True }
     items' <- mapM typeItem items
     modify $ \x -> x { blockScope = False }
-    return . FuncDecl name params s . Just . Block $ items'
-typeDecl nothing@(FuncDecl name params s Nothing) = do
+    return . Just . FuncDecl name params s . Just . Block . catMaybes $ items'
+typeDecl (FuncDecl name params s Nothing) = do
     syms <- gets symbols
     def <- case M.lookup name syms of
         Just (TFunc args def, _) -> 
@@ -76,10 +76,11 @@ typeDecl nothing@(FuncDecl name params s Nothing) = do
     g <- funcGlobal name s
     let syms' = foldl(\m k -> M.insert k (TInt, LocalAttr) m) syms params
     modify $ \x -> x { symbols = M.insert name (TFunc (length params) def, FunAttr def g) syms' }
-    return nothing
-typeDecl var@(VarDecl {}) = do
+    return Nothing
+typeDecl (VarDecl name st blk) = do
     scope <- gets blockScope
-    if scope then blockVar var else fileVar var
+    let f = if scope then blockVar else fileVar
+    f name st blk
 
 funcGlobal :: String -> Maybe Storage -> TypeMonad Bool
 funcGlobal name s = do
@@ -91,8 +92,8 @@ funcGlobal name s = do
             else return (attrGlobal at)
         Nothing -> return g
 
-fileVar :: Declaration -> TypeMonad Declaration
-fileVar var@(VarDecl name s initial) = do
+fileVar :: String -> Maybe Storage -> Maybe Expr -> TypeMonad (Maybe Declaration)
+fileVar name s initial = do
     let blankVal = if s == Just Extern then NoInitializer else Tentative
         value = maybe (Just blankVal) (fmap Initial . evalConstant) initial
     when (isNothing value) $ writeError "Cannot assign non-constant expr to file var"
@@ -109,8 +110,7 @@ fileVar var@(VarDecl name s initial) = do
                         else return $ fromJust value
               Nothing -> return $ fromJust value
     modify $ \x -> x { symbols = M.insert name (TInt, StaticAttr newV newG) syms}
-    return var
-fileVar _ = error "Unreachable"
+    return Nothing
 
 isInitial :: InitValue -> Bool
 isInitial (Initial _) = True
@@ -143,36 +143,35 @@ getGlobal name s = do
                     else return g
         Nothing -> return g
 
-blockVar :: Declaration -> TypeMonad Declaration
-blockVar (VarDecl _ (Just Extern) (Just _)) = writeError "Cannot initialize extern var decl"
-blockVar var@(VarDecl name (Just Extern) Nothing) = do
+blockVar :: String -> Maybe Storage -> Maybe Expr -> TypeMonad (Maybe Declaration)
+blockVar _ (Just Extern) (Just _) = writeError "Cannot initialize extern var decl"
+blockVar name (Just Extern) Nothing = do
     syms <- gets symbols
     case M.lookup name syms of
         Just (TFunc _ _, _) -> writeError "Function redclared as variable"
-        Just _ -> return var
+        Just _ -> return Nothing
         _ -> do modify $ \x -> x { symbols = M.insert name (TInt, StaticAttr NoInitializer True) syms}
-                return var
-blockVar var@(VarDecl name (Just Static) initial) = do
+                return Nothing
+blockVar name (Just Static) initial = do
     let value = maybe (Just 0) evalConstant initial
     when (isNothing value) $ writeError "Cannot assign non-constant expr to static var"
     modify $ \x -> x { symbols = M.insert name (TInt, StaticAttr (Initial (fromIntegral (fromJust value))) True) $ symbols x}
-    return var
-blockVar (VarDecl name s initial) = do
+    return Nothing
+blockVar name s initial = do
     modify $ \x -> x {symbols = M.insert name (TInt, LocalAttr) $ symbols x}
     case initial of
         Just x -> do
             e <- typeExpr x
-            return $ VarDecl name s (Just e)
-        Nothing -> return $ VarDecl name s Nothing
-blockVar _ = error "Unreachable"
+            return . Just $ VarDecl name s (Just e)
+        Nothing -> return Nothing
 
-typeItem :: BlockItem -> TypeMonad BlockItem
-typeItem (S stmt) = S <$> typeStmt stmt
-typeItem (D decl) = D <$> typeDecl decl
+typeItem :: BlockItem -> TypeMonad (Maybe BlockItem)
+typeItem (S stmt) = pure . S <$> typeStmt stmt
+typeItem (D decl) = fmap D <$> typeDecl decl
 
 typeStmt :: Statement -> TypeMonad Statement
 typeStmt (Labelled name stmt) = Labelled name <$> typeStmt stmt
-typeStmt (Compound (Block items)) = Compound . Block <$> mapM typeItem items
+typeStmt (Compound (Block items)) = Compound . Block . catMaybes <$> mapM typeItem items
 typeStmt (If e1 s1 s2) = do
     e1' <- typeExpr e1
     s1' <- typeStmt s1
