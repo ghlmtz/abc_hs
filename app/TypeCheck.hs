@@ -6,7 +6,8 @@ module TypeCheck
 , InitValue(..)
 ) where
 
-import Parse
+import Parse(Storage(..))
+import Semantic
 
 import Control.Monad.State
 import qualified Data.Map as M
@@ -30,15 +31,15 @@ writeError :: String -> TypeMonad a
 writeError s = do
     modify (\x -> x { err = Just s}) *> error s
 
-resolveType :: Program -> Either String (Program, M.Map String (Type, IdentAttr))
+resolveType :: SProgram -> Either String (SProgram, M.Map String (Type, IdentAttr))
 resolveType prog = do
     let result = runState (typeProg prog) (TypeState M.empty Nothing False)
     case err (snd result) of
         Just e -> Left e
         Nothing -> Right (fst result, symbols (snd result))
 
-typeProg :: Program -> TypeMonad Program
-typeProg (Program f) = Program <$> mapM typeDecl f
+typeProg :: SProgram -> TypeMonad SProgram
+typeProg (SProgram f) = SProgram <$> mapM typeDecl f
 
 evalConstant :: Expr -> Maybe Integer
 evalConstant (Int i) = Just i
