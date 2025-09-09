@@ -1,15 +1,60 @@
 module Semantic
 (
-    resolve
+  resolve
+, Expr(..)
+, Declaration(..)
+, Statement(..)
+, ForInit(..)
+, Block(..)
+, BlockItem(..)
+, SProgram(..)
 ) where
 
-import Parse
-import qualified TypeCheck as TC
+import qualified Parse as P
+import Parse (UnaryOp(..), StaticInit(..), Type(..), Storage(..))
 
 import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as M
 import Data.Maybe (isJust, fromJust, isNothing)
+
+data Expr = Constant P.Const
+           | Unary P.UnaryOp Expr
+           | Binary P.BinaryOp Expr Expr
+           | Var String
+           | Cast Type Expr
+           | Assignment Expr Expr
+           | CompoundAssignment P.BinaryOp Expr Expr
+           | Conditional Expr Expr Expr
+           | FunctionCall String [Expr]
+    deriving (Show)
+data Declaration = FuncDecl String [String] (Maybe P.Storage) Type (Maybe Block) 
+                 | VarDecl String (Maybe P.Storage) Type (Maybe Expr) 
+    deriving (Show)
+newtype Block = Block [BlockItem]
+    deriving (Show)
+data ForInit = InitDecl Declaration | InitExpr (Maybe Expr)
+    deriving (Show)
+data Statement = Return Expr
+               | Expression Expr
+               | Goto String
+               | Compound Block
+               | If Expr Statement (Maybe Statement)
+               | Switch Expr Statement String [Maybe StaticInit]
+               | Labelled String Statement
+               | Case Expr Statement
+               | Default Statement
+               | Break String
+               | Continue String
+               | While Expr Statement String
+               | DoWhile Statement Expr String
+               | For ForInit (Maybe Expr) (Maybe Expr) Statement String
+               | Null
+    deriving (Show)
+data BlockItem = S Statement | D Declaration
+    deriving (Show)
+newtype SProgram = SProgram [Declaration]
+    deriving (Show)
 
 type SemanticMonad m = ReaderT LocalVars (State SemanticState) m
 type IdentMap = M.Map String (String, Bool)
@@ -49,12 +94,12 @@ initState = SemanticState {
     , nameCount = 0
     , err = Nothing}
 
-resolve :: Program -> Either String (TC.Program, M.Map String (Type, TC.IdentAttr))
+resolve :: P.Program -> Either String SProgram
 resolve prog = do
     let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of
         Just e -> Left e
-        Nothing -> TC.resolveType $ fst result
+        Nothing -> Right $ fst result
 
 gotoFunc :: Declaration -> SemanticMonad Declaration
 gotoFunc (FuncDecl name params s t (Just (Block items))) = FuncDecl name params s t . Just . Block <$> mapM gotoItem items
@@ -92,11 +137,11 @@ gotoStmt (For i e1 e2 s n) = do
     return $ For i e1 e2 s' n
 gotoStmt s = return s
 
-resolveProg :: Program -> SemanticMonad Program
-resolveProg (Program f) = Program <$> mapM resolveDecl f
+resolveProg :: P.Program -> SemanticMonad SProgram
+resolveProg (P.Program f) = SProgram <$> mapM resolveDecl f
 
-resolveFunc :: Declaration -> SemanticMonad Declaration
-resolveFunc (FuncDecl name params st t blk) = do
+resolveFunc :: P.Declaration -> SemanticMonad Declaration
+resolveFunc (P.FuncDecl name params st t blk) = do
     gm <- gets blockVars
     level <- asks blockScope
     when (level && st == Just Static) $ writeError "Cannot have static function at block level"
@@ -105,11 +150,11 @@ resolveFunc (FuncDecl name params st t blk) = do
     s <- gets (remap . blockVars)
     (params', blk') <- local s $ do
         modify $ \x -> x { blockVars = M.empty}
-        mapM_ (resolveDecl . (\x -> VarDecl x Nothing TInt Nothing)) params
+        mapM_ (resolveDecl . (\x -> P.VarDecl x Nothing TInt Nothing)) params
         vars <- gets blockVars
         let params' = map (fst . fromJust . flip M.lookup vars) params
         blk' <- case blk of
-                Just (Block bs) -> Just . Block <$> mapM resolveItem bs
+                Just (P.Block bs) -> Just . Block <$> mapM resolveItem bs
                 Nothing -> return Nothing
         oldVars <- asks identifierMap
         modify $ \x -> x { blockVars = oldVars }
@@ -119,7 +164,7 @@ resolveFunc (FuncDecl name params st t blk) = do
     return g
 resolveFunc _ = error "Hmm"
 
-descend :: (a -> SemanticMonad a) -> a -> SemanticMonad a
+descend :: (a -> SemanticMonad b) -> a -> SemanticMonad b
 descend f arg = do
     s <- gets (remap . blockVars)
     local s $ do
@@ -129,27 +174,27 @@ descend f arg = do
         modify $ \x -> x { blockVars = oldVars }
         return r
 
-resolveBlock :: [BlockItem] -> SemanticMonad Block
+resolveBlock :: [P.BlockItem] -> SemanticMonad Block
 resolveBlock items = Block <$> descend (mapM resolveItem) items
 
 remap :: IdentMap -> LocalVars -> LocalVars
 remap s r = r { identifierMap = M.union s (identifierMap r), blockScope = True }
 
-resolveItem :: BlockItem -> SemanticMonad BlockItem
-resolveItem (S stmt) = S <$> resolveStmt stmt
-resolveItem (D decl) = D <$> resolveDecl decl
+resolveItem :: P.BlockItem -> SemanticMonad BlockItem
+resolveItem (P.S stmt) = S <$> resolveStmt stmt
+resolveItem (P.D decl) = D <$> resolveDecl decl
 
-resolveForInit :: ForInit -> SemanticMonad ForInit
-resolveForInit (InitExpr e) = InitExpr <$> traverse resolveExpr e
-resolveForInit (InitDecl d) = do
+resolveForInit :: P.ForInit -> SemanticMonad ForInit
+resolveForInit (P.InitExpr e) = InitExpr <$> traverse resolveExpr e
+resolveForInit (P.InitDecl d) = do
     d' <- resolveDecl d
     case d' of
         FuncDecl {} -> writeError "Cannot declare function in for init"
         VarDecl _ (Just _) _ _ -> writeError "Cannot have storage ident in for init"
         _ -> return $ InitDecl d'
 
-resolveFor :: Statement -> SemanticMonad Statement
-resolveFor (For initial cond post body name) = do
+resolveFor :: P.Statement -> SemanticMonad Statement
+resolveFor (P.For initial cond post body name) = do
     i <- resolveForInit initial
     c <- traverse resolveExpr cond
     p <- traverse resolveExpr post
@@ -164,31 +209,31 @@ newSwitchLabel :: String -> [Maybe StaticInit] -> LocalVars -> LocalVars
 newSwitchLabel new lbls l = l { breakLabel = Just new, switchLabel = Just new, localSwitch = lbls}
 
 evalConstant :: Expr -> Maybe StaticInit
-evalConstant (Constant (ConstInt i)) = Just (IntInit (fromIntegral i))
-evalConstant (Constant (ConstLong i)) = Just (LongInit (fromIntegral i))
+evalConstant (Constant (P.ConstInt i)) = Just (IntInit (fromIntegral i))
+evalConstant (Constant (P.ConstLong i)) = Just (LongInit (fromIntegral i))
 evalConstant _ = Nothing
 
-resolveStmt :: Statement -> SemanticMonad Statement
-resolveStmt (Return e) = Return <$> resolveExpr e
-resolveStmt (Expression e) = Expression <$> resolveExpr e
-resolveStmt (If e1 e2 e3) = do
+resolveStmt :: P.Statement -> SemanticMonad Statement
+resolveStmt (P.Return e) = Return <$> resolveExpr e
+resolveStmt (P.Expression e) = Expression <$> resolveExpr e
+resolveStmt (P.If e1 e2 e3) = do
     r1 <- resolveExpr e1
     r2 <- resolveStmt e2
     r3 <- traverse resolveStmt e3
     return $ If r1 r2 r3
-resolveStmt (While e s _) = do
+resolveStmt (P.While e s _) = do
     label <- uniqueLabel
     local (newLoopLabel label) $ do
         e1 <- resolveExpr e
         s1 <- resolveStmt s
         return $ While e1 s1 label
-resolveStmt (DoWhile s e _) = do
+resolveStmt (P.DoWhile s e _) = do
     label <- uniqueLabel
     local (newLoopLabel label) $ do
         e1 <- resolveExpr e
         s1 <- resolveStmt s
         return $ DoWhile s1 e1 label
-resolveStmt (Case e s) = do
+resolveStmt (P.Case e s) = do
     l <- asks switchLabel
     n <- resolveExpr e
     s1 <- resolveStmt s
@@ -201,7 +246,7 @@ resolveStmt (Case e s) = do
             modify $ \x -> x { switchLabels = n' : lbls}
             return $ Labelled (l' ++ "." ++ show (fromJust n')) s1
         Nothing   -> writeError "Not in switch!"
-resolveStmt (Default s) = do
+resolveStmt (P.Default s) = do
     l <- asks switchLabel
     s1 <- resolveStmt s
     case l of
@@ -211,10 +256,10 @@ resolveStmt (Default s) = do
             modify $ \x -> x { switchLabels = Nothing : lbls}
             return $ Labelled (l' ++ ".default") s1
         Nothing   -> writeError "Not in switch!"
-resolveStmt (For i c p b _) = do
+resolveStmt (P.For i c p b _) = do
     label <- uniqueLabel
-    local (newLoopLabel label) $ descend resolveFor (For i c p b label)
-resolveStmt (Switch e s _ _) = do
+    local (newLoopLabel label) $ descend resolveFor (P.For i c p b label)
+resolveStmt (P.Switch e s _ _) = do
     label <- uniqueLabel
     lbls <- gets switchLabels
     local (newSwitchLabel label lbls) $ do
@@ -225,28 +270,28 @@ resolveStmt (Switch e s _ _) = do
         oldLabels <- asks localSwitch
         modify $ \x -> x { switchLabels = oldLabels }
         return $ Switch e1 s1 label slbl
-resolveStmt (Break _) = do
+resolveStmt (P.Break _) = do
     l <- asks breakLabel
     maybe (writeError "No label!") (return . Break) l
-resolveStmt (Continue _) = do
+resolveStmt (P.Continue _) = do
     l <- asks continueLabel
     maybe (writeError "No label!") (return . Continue) l
-resolveStmt (Goto label) = return $ Goto label
-resolveStmt (Labelled name stmt) = do
+resolveStmt (P.Goto label) = return $ Goto label
+resolveStmt (P.Labelled name stmt) = do
     s1 <- resolveStmt stmt
     m <- gets labels
     unique <- uniqueLabel
     when (isJust (lookup name m)) $ writeError "Duplicate label declaration!"
     modify $ \x -> x {labels = (name, unique) : labels x}
     return $ Labelled unique s1
-resolveStmt (Compound (Block items)) = Compound <$> resolveBlock items
-resolveStmt op = return op
+resolveStmt (P.Compound (P.Block items)) = Compound <$> resolveBlock items
+resolveStmt P.Null = return Null
 
 writeError :: String -> SemanticMonad a
 writeError s = modify (\x -> x { err = Just s }) *> error s
 
-resolveDecl :: Declaration -> SemanticMonad Declaration
-resolveDecl (VarDecl name s t initial) = do
+resolveDecl :: P.Declaration -> SemanticMonad Declaration
+resolveDecl (P.VarDecl name s t initial) = do
     m <- gets blockVars
     inBlock <- asks blockScope
     uniq <- if not inBlock
@@ -266,14 +311,14 @@ resolveDecl (VarDecl name s t initial) = do
         Nothing -> return $ VarDecl uniq s t Nothing
 resolveDecl fun = resolveFunc fun
 
-resolveExpr :: Expr -> SemanticMonad Expr
-resolveExpr (Assignment (Var s) r) = do
-    Assignment <$> resolveExpr (Var s) <*> resolveExpr r
-resolveExpr (Assignment _ _) = writeError "Invalid lvalue!"
-resolveExpr (CompoundAssignment op (Var s) r) = do
-    CompoundAssignment op <$> resolveExpr (Var s) <*> resolveExpr r
-resolveExpr (CompoundAssignment {}) = writeError "Invalid lvalue!"
-resolveExpr (Var v) = do
+resolveExpr :: P.Expr -> SemanticMonad Expr
+resolveExpr (P.Assignment (P.Var s) r) = do
+    Assignment <$> resolveExpr (P.Var s) <*> resolveExpr r
+resolveExpr (P.Assignment _ _) = writeError "Invalid lvalue!"
+resolveExpr (P.CompoundAssignment op (P.Var s) r) = do
+    CompoundAssignment op <$> resolveExpr (P.Var s) <*> resolveExpr r
+resolveExpr (P.CompoundAssignment {}) = writeError "Invalid lvalue!"
+resolveExpr (P.Var v) = do
     gm <- gets (M.lookup v . blockVars)
     lm <- asks (M.lookup v . identifierMap)
     case gm of
@@ -281,19 +326,19 @@ resolveExpr (Var v) = do
         Nothing -> case lm of
                     Just x -> return $ Var (fst x)
                     Nothing -> writeError $ "Undeclared variable: " ++ show v
-resolveExpr (Unary PreDec (Var s)) = Unary PreDec <$> resolveExpr (Var s)
-resolveExpr (Unary PreInc (Var s)) = Unary PreInc <$> resolveExpr (Var s)
-resolveExpr (Unary PreDec _) = writeError "Invalid lvalue!"
-resolveExpr (Unary PreInc _) = writeError "Invalid lvalue!"
-resolveExpr (Unary PostDec (Var s)) = Unary PostDec <$> resolveExpr (Var s)
-resolveExpr (Unary PostInc (Var s)) = Unary PostInc <$> resolveExpr (Var s)
-resolveExpr (Unary PostDec _) = writeError "Invalid lvalue!"
-resolveExpr (Unary PostInc _) = writeError "Invalid lvalue!"
-resolveExpr (Unary op e) = Unary op <$> resolveExpr e
-resolveExpr (Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
-resolveExpr (Constant i) = return (Constant i)
-resolveExpr (Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
-resolveExpr (FunctionCall name args) = do
+resolveExpr (P.Unary PreDec (P.Var s)) = Unary PreDec <$> resolveExpr (P.Var s)
+resolveExpr (P.Unary PreInc (P.Var s)) = Unary PreInc <$> resolveExpr (P.Var s)
+resolveExpr (P.Unary PreDec _) = writeError "Invalid lvalue!"
+resolveExpr (P.Unary PreInc _) = writeError "Invalid lvalue!"
+resolveExpr (P.Unary PostDec (P.Var s)) = Unary PostDec <$> resolveExpr (P.Var s)
+resolveExpr (P.Unary PostInc (P.Var s)) = Unary PostInc <$> resolveExpr (P.Var s)
+resolveExpr (P.Unary PostDec _) = writeError "Invalid lvalue!"
+resolveExpr (P.Unary PostInc _) = writeError "Invalid lvalue!"
+resolveExpr (P.Unary op e) = Unary op <$> resolveExpr e
+resolveExpr (P.Binary op e1 e2) = Binary op <$> resolveExpr e1 <*> resolveExpr e2
+resolveExpr (P.Constant i) = return (Constant i)
+resolveExpr (P.Conditional e1 e2 e3) = Conditional <$> resolveExpr e1 <*> resolveExpr e2 <*> resolveExpr e3
+resolveExpr (P.FunctionCall name args) = do
     gm <- gets (M.lookup name . blockVars)
     lm <- asks (M.lookup name . identifierMap)
     case gm of
@@ -301,7 +346,7 @@ resolveExpr (FunctionCall name args) = do
         Nothing -> case lm of
                     Just x -> FunctionCall (fst x) <$> mapM resolveExpr args
                     Nothing -> writeError $ "Undeclared function: " ++ show name
-resolveExpr (Cast t e) = Cast t <$> resolveExpr e
+resolveExpr (P.Cast t e) = Cast t <$> resolveExpr e
 
 uniqueName :: String -> SemanticMonad String
 uniqueName s = do
