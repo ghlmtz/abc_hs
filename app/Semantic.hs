@@ -49,7 +49,7 @@ initState = SemanticState {
     , nameCount = 0
     , err = Nothing}
 
-resolve :: Program -> Either String (TC.Program, M.Map String (PType, TC.IdentAttr))
+resolve :: Program -> Either String (TC.Program, M.Map String (Type, TC.IdentAttr))
 resolve prog = do
     let result = runState (runReaderT (resolveProg prog) localVars) initState
     case err (snd result) of

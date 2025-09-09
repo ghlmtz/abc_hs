@@ -7,7 +7,7 @@ module TypeCheck
 ) where
 
 import qualified Parse as P
-import Parse(PType(..), Const(..), UnaryOp(..), BinaryOp(..), Storage(..), StaticInit(..))
+import Parse(Type(..), Const(..), UnaryOp(..), BinaryOp(..), Storage(..), StaticInit(..))
 
 import Control.Monad.State
 import qualified Data.Map as M
@@ -20,18 +20,18 @@ data IdentAttr = FunAttr { fDef :: Bool, fGlobal :: Bool }
 data InitValue = Tentative | Initial StaticInit | NoInitializer
     deriving (Eq, Show)
 data TypeState = TypeState {
-  symbols :: M.Map String (PType, IdentAttr)
+  symbols :: M.Map String (Type, IdentAttr)
 , err :: Maybe String
 , blockScope :: Bool
-, funType :: Maybe PType
+, funType :: Maybe Type
 }
-data TypedExpr = TypedExpr Expr PType
+data TypedExpr = TypedExpr Expr Type
     deriving (Show)
 data Expr = Constant Const
           | Unary UnaryOp TypedExpr
           | Binary BinaryOp TypedExpr TypedExpr
           | Var String
-          | Cast PType TypedExpr
+          | Cast Type TypedExpr
           | Assignment TypedExpr TypedExpr
           | CompoundAssignment BinaryOp TypedExpr TypedExpr
           | Conditional TypedExpr TypedExpr TypedExpr
@@ -40,11 +40,11 @@ data Expr = Constant Const
 data Declaration = FuncDecl { fName :: String
                             , fArgNames :: [String]
                             , fStorage :: Maybe Storage
-                            , fType :: PType
+                            , fType :: Type
                             , fBlock :: Maybe Block }
                  | VarDecl { vName :: String
                            , vStorage :: Maybe Storage
-                           , vType :: PType
+                           , vType :: Type
                            , vInit :: Maybe Expr }
     deriving (Show)
 newtype Block = Block [BlockItem]
@@ -77,7 +77,7 @@ type TypeMonad m = State TypeState m
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x { err = Just s}) *> error s
 
-resolveType :: P.Program -> Either String (Program, M.Map String (PType, IdentAttr))
+resolveType :: P.Program -> Either String (Program, M.Map String (Type, IdentAttr))
 resolveType prog = do
     let result = runState (typeProg prog) (TypeState M.empty Nothing False Nothing)
     case err (snd result) of
@@ -92,12 +92,12 @@ evalConstant (P.Constant (ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (P.Constant (ConstLong i)) = Just (LongInit (fromIntegral i))
 evalConstant _ = Nothing
 
-convertTo :: TypedExpr -> PType -> TypedExpr
+convertTo :: TypedExpr -> Type -> TypedExpr
 convertTo ex@(TypedExpr _ oldType) newType =
     if oldType == newType then ex
     else TypedExpr (Cast newType ex) newType
 
-commonType :: PType -> PType -> PType
+commonType :: Type -> Type -> Type
 commonType a b
     | a == b = a
     | otherwise = TLong
@@ -292,7 +292,7 @@ ugly :: Maybe P.Expr -> TypeMonad (Maybe Expr)
 ugly Nothing = return Nothing
 ugly (Just e) = fmap (Just . fst) (typeExpr e)
 
-typeExpr :: P.Expr -> TypeMonad (Expr, PType)
+typeExpr :: P.Expr -> TypeMonad (Expr, Type)
 typeExpr (P.FunctionCall name args) = do
     t <- gets (M.lookup name . symbols)
     case t of

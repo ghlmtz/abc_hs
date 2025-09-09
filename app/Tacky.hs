@@ -21,7 +21,7 @@ data TackyState = TackyState {
 , symbols :: SymbolMap
 }
 
-type SymbolMap = M.Map String (Type, IdentAttr)
+type SymbolMap = M.Map String (P.Type, IdentAttr)
 type TackyMonad = RWS SymbolMap [Instruction] TackyState
 
 newtype TackyProg = TackyProg [TopLevel]
@@ -44,14 +44,14 @@ data Value = Constant Integer | Var String
 data UnaryOp = Complement | Negate | Not
     deriving (Show)
 
-tack :: (P.Program, M.Map String (Type, IdentAttr)) -> Either String (TackyProg, M.Map String (Type, IdentAttr))
+tack :: (P.Program, M.Map String (P.Type, IdentAttr)) -> Either String (TackyProg, M.Map String (P.Type, IdentAttr))
 tack (prog, syms) = Right (prog', syms)
     where prog' = combo (TackyProg (convertSyms (M.assocs syms))) $ fst $ evalRWS (scan prog) M.empty (TackyState 0 0 syms)
 
 combo :: TackyProg -> TackyProg -> TackyProg
 combo (TackyProg a) (TackyProg b) = TackyProg (b ++ a)
 
-convertSyms :: [(String, (Type, IdentAttr))] -> [TopLevel]
+convertSyms :: [(String, (P.Type, IdentAttr))] -> [TopLevel]
 convertSyms ((name, (_, StaticAttr (Initial i) global)):syms) = StaticVar name global i : convertSyms syms
 convertSyms ((name, (_, StaticAttr Tentative global)):syms) = StaticVar name global 0 : convertSyms syms
 convertSyms (_:syms) = convertSyms syms
@@ -59,17 +59,16 @@ convertSyms [] = []
 
 scan :: P.Program -> TackyMonad TackyProg
 scan (P.Program f) = TackyProg <$> mapM funcDef (filter fil f)
-    where fil (P.FuncDecl _ _ _ x) = isJust x
+    where fil (P.FuncDecl _ _ _ _ x) = isJust x
           fil _ = False
 
 funcDef :: P.Declaration -> TackyMonad TopLevel
-funcDef (P.FuncDecl name params _ (Just (P.Block items))) = do
+funcDef (P.FuncDecl name params _ _ block) = do
     g <- attrGlobal name
-    (_, is) <- listen (mapM blockItem (items ++ [P.S (P.Return (P.Int 0))]))
-    return $ FuncDef name g params is
-funcDef (P.FuncDecl name params _ Nothing) = do
-    g <- attrGlobal name
-    return $ FuncDef name g params []
+    FuncDef name g params <$> case block of 
+        Just (P.Block items) -> 
+            snd <$> listen (mapM blockItem (items ++ [P.S (P.Return (P.Constant (P.ConstInt 0)))]))
+        Nothing -> return []        
 funcDef _ = return $ StaticVar [] False 0
 
 attrGlobal :: String -> TackyMonad Bool
@@ -80,14 +79,14 @@ attrGlobal name = do
         Just (_, FunAttr _ a) -> return a
         _ -> return False
 
-blockItem :: P.BlockItem -> TackyProg ()
+blockItem :: P.BlockItem -> TackyMonad ()
 blockItem (P.S s) = statement s
-blockItem (P.D (P.VarDecl _ (Just P.Static) _)) = return ()
-blockItem (P.D (P.VarDecl name _ (Just v))) =
+blockItem (P.D (P.VarDecl _ (Just P.Static) _ _)) = return ()
+blockItem (P.D (P.VarDecl name _ _ (Just v))) =
     void $ expr $ P.Assignment (P.Var name) v
 blockItem _ = return ()
 
-statement :: P.Statement -> TackyProg ()
+statement :: P.Statement -> TackyMonad ()
 statement (P.Return e) = tell . return . Return =<< expr e
 statement (P.Expression e) = void (expr e)
 statement (P.Goto lbl) = tell [Jump lbl]
@@ -192,7 +191,7 @@ expr (P.Binary op e1 e2) = do
     s2 <- expr e2
     tell [Binary op s1 s2 dst]
     return dst
-expr (P.Int n) = return (Constant n)
+expr (P.Constant n) = return (Constant n)
 expr (P.FunctionCall name args) = do
     dst <- Var <$> tmpVar
     es <- mapM expr args
@@ -212,7 +211,7 @@ expr (P.Conditional eCond eIf eElse) = do
     return ret
 expr _ = error "Invalid expression!"
 
-switchStmt :: P.Expr -> P.Statement -> [Char] -> [Maybe Integer] -> TackyMonad ()
+switchStmt :: P.Expr -> P.Statement -> [Char] -> [Maybe P.StaticInit] -> TackyMonad ()
 switchStmt e s name cases = do
     cond <- expr e
     mapM_ (makeCase cond name) (catMaybes cases)
@@ -222,7 +221,7 @@ switchStmt e s name cases = do
     statement s
     tell [Label ("break_" ++ name)]
 
-makeCase :: Value -> [Char] -> Integer -> TackyMonad ()
+makeCase :: Value -> [Char] -> P.StaticInit -> TackyMonad ()
 makeCase cond name n = do
     end <- tmpLabel "end"
     dst <- Var <$> tmpVar

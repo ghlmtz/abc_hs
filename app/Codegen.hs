@@ -8,9 +8,9 @@ import qualified Parse as P
 
 import Data.List (elemIndex)
 import Data.Maybe (fromMaybe)
-import TypeCheck
 import qualified Data.Map as M
 import Control.Monad.RWS
+import TypeCheck (IdentAttr(..))
 
 newtype Program = Program [TopLevel]
 data TopLevel = FuncDef String Bool [Instruction]
@@ -46,7 +46,7 @@ data CodeState = CodeState {
   varList :: [String]
 }
 data CodeReader = CodeReader {
-  symbols :: M.Map String (Type, IdentAttr)
+  symbols :: M.Map String (P.Type, IdentAttr)
 }
 type CodeMonad = RWS CodeReader [Instruction] CodeState
 type MayError = Either String
@@ -139,7 +139,7 @@ instance Show Program where show = showProgram
 showProgram :: Program -> [Char]
 showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
-genCode :: (T.TackyProg, M.Map String (Type, IdentAttr)) -> MayError Program
+genCode :: (T.TackyProg, M.Map String (P.Type, IdentAttr)) -> MayError Program
 genCode (prog, syms) = pure $ fst $ evalRWS (pass1 prog) (CodeReader syms) (CodeState [])
 
 pass1 :: T.TackyProg -> CodeMonad Program
