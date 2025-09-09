@@ -138,11 +138,11 @@ instance Show Program where show = showProgram
 showProgram :: Program -> [Char]
 showProgram (Program f) = concatMap show f ++ "\n.section .note.GNU-stack,\"\",@progbits\n"
 
-genCode :: (T.Program, M.Map String (Type, IdentAttr)) -> MayError Program
-genCode (prog, syms) = pure $ evalState (runReaderT (pass1 prog) syms) $ CodeState []
+genCode :: (T.TackyProg, M.Map String (Type, IdentAttr)) -> MayError Program
+genCode (prog, syms) = pure $ evalState (pass1 prog) $ CodeState [] syms
 
-pass1 :: T.Program -> CodeMonad Program
-pass1 (T.Program f) = Program <$> mapM topLevel f
+pass1 :: T.TackyProg -> CodeMonad Program
+pass1 (T.TackyProg f) = Program <$> mapM topLevel f
 
 topLevel :: T.TopLevel -> CodeMonad TopLevel
 topLevel (T.FuncDef name global params stmt) = do
