@@ -1,80 +1,125 @@
 module Lex
-(
-  lexer
-, CToken(..)
-) where
+  ( lexer,
+    CToken (..),
+  )
+where
 
+import Data.Maybe (fromMaybe)
+import Data.Void (Void)
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer as L
-import Data.Void (Void)
-import Data.Maybe (fromMaybe)
 
 type Parser = Parsec Void String
+
 type MayError = Either String
 
-data CToken = Identifier String
-           | Constant Integer
-           | LConstant Integer
-           | LeftParen
-           | RightParen
-           | LeftBrace
-           | RightBrace
-           | Semicolon
-           | Int
-           | Return
-           | Void
-           | Tilde | Minus | Plus | Star | Slash | Percent
-           | And | Pipe | Caret | LeftShift | RightShift
-           | AndAnd | PipePipe | EqualEqual | BangEqual | Equal
-           | Bang | LessThan | GreaterThan | LessEqual | GreaterEqual
-           | PlusPlus | MinusMinus
-           | PlusEqual | MinusEqual | StarEqual | SlashEqual
-           | PercentEqual | AndEqual | OrEqual | XorEqual
-           | LeftShiftEqual | RightShiftEqual
-           | If | Else | Question | Colon | Goto
-           | Break | Continue | Do | For | While
-           | Case | Default | Switch | Comma
-           | Static | Extern | Long
-    deriving (Show, Eq, Ord)
+data CToken
+  = Identifier String
+  | Constant Integer
+  | LConstant Integer
+  | LeftParen
+  | RightParen
+  | LeftBrace
+  | RightBrace
+  | Semicolon
+  | Int
+  | Return
+  | Void
+  | Tilde
+  | Minus
+  | Plus
+  | Star
+  | Slash
+  | Percent
+  | And
+  | Pipe
+  | Caret
+  | LeftShift
+  | RightShift
+  | AndAnd
+  | PipePipe
+  | EqualEqual
+  | BangEqual
+  | Equal
+  | Bang
+  | LessThan
+  | GreaterThan
+  | LessEqual
+  | GreaterEqual
+  | PlusPlus
+  | MinusMinus
+  | PlusEqual
+  | MinusEqual
+  | StarEqual
+  | SlashEqual
+  | PercentEqual
+  | AndEqual
+  | OrEqual
+  | XorEqual
+  | LeftShiftEqual
+  | RightShiftEqual
+  | If
+  | Else
+  | Question
+  | Colon
+  | Goto
+  | Break
+  | Continue
+  | Do
+  | For
+  | While
+  | Case
+  | Default
+  | Switch
+  | Comma
+  | Static
+  | Extern
+  | Long
+  deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
 lexer = either (Left . errorBundlePretty) Right . parse pattern "abc_lexer"
-    where pattern = skipSpace *> manyTill (parseFile <* optional skipSpace) eof
+  where
+    pattern = skipSpace *> manyTill (parseFile <* optional skipSpace) eof
 
 skipSpace :: Parser ()
-skipSpace = L.space
-  space1
-  (L.skipLineComment "//")
-  (L.skipBlockCommentNested "/*" "*/")
+skipSpace =
+  L.space
+    space1
+    (L.skipLineComment "//")
+    (L.skipBlockCommentNested "/*" "*/")
 
 parseFile :: Parser CToken
-parseFile = parseIdent
-        <|> parseConstant
-        <|> parseSymbols
+parseFile =
+  parseIdent
+    <|> parseConstant
+    <|> parseSymbols
 
 parseIdent :: Parser CToken
 parseIdent = do
-    first <- letterChar <|> char '_'
-    rest <- many (alphaNumChar <|> char '_')
-    let s = first : rest
-    return $ fromMaybe (Identifier s) $ lookup s reserved
+  first <- letterChar <|> char '_'
+  rest <- many (alphaNumChar <|> char '_')
+  let s = first : rest
+  return $ fromMaybe (Identifier s) $ lookup s reserved
 
 parseConstant :: Parser CToken
 parseConstant = do
-    digits <- some digitChar
-    long <- optional (char 'l' <|> char 'L') <* notFollowedBy (letterChar <|> char '_')
-    return $ case long of
-                Nothing -> Constant (read digits)
-                _ -> LConstant (read digits)
+  digits <- some digitChar
+  long <- optional (char 'l' <|> char 'L') <* notFollowedBy (letterChar <|> char '_')
+  return $ case long of
+    Nothing -> Constant (read digits)
+    _ -> LConstant (read digits)
 
 parseSymbols :: Parser CToken
-parseSymbols = choice $ map (try . uncurry multiChar) multiChars
-                     ++ map (try . uncurry singleChar) singleChars
+parseSymbols =
+  choice $
+    map (try . uncurry multiChar) multiChars
+      ++ map (try . uncurry singleChar) singleChars
 
 singleChars :: [] (Char, CToken)
-singleChars = [
-    ('{', LeftBrace),
+singleChars =
+  [ ('{', LeftBrace),
     ('}', RightBrace),
     ('(', LeftParen),
     (')', RightParen),
@@ -94,14 +139,15 @@ singleChars = [
     ('=', Equal),
     ('?', Question),
     (':', Colon),
-    (',', Comma)]
+    (',', Comma)
+  ]
 
 singleChar :: Char -> CToken -> Parser CToken
 singleChar c t = t <$ char c
 
 reserved :: [] (String, CToken)
-reserved = [
-    ("break", Break),
+reserved =
+  [ ("break", Break),
     ("case", Case),
     ("continue", Continue),
     ("default", Default),
@@ -117,11 +163,12 @@ reserved = [
     ("static", Static),
     ("switch", Switch),
     ("void", Void),
-    ("while", While)]
+    ("while", While)
+  ]
 
 multiChars :: [] ([Char], CToken)
-multiChars = [
-    ("<<=", LeftShiftEqual),
+multiChars =
+  [ ("<<=", LeftShiftEqual),
     (">>=", RightShiftEqual),
     ("--", MinusMinus),
     ("<<", LeftShift),
@@ -140,7 +187,8 @@ multiChars = [
     ("%=", PercentEqual),
     ("&=", AndEqual),
     ("|=", OrEqual),
-    ("^=", XorEqual)]
+    ("^=", XorEqual)
+  ]
 
 multiChar :: String -> CToken -> Parser CToken
 multiChar c t = t <$ string c
