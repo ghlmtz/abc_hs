@@ -5,6 +5,7 @@ import System.Environment
 import Lex (lexer)
 import Parse (parser)
 import Semantic (resolve)
+import TypeCheck (resolveType)
 import Tacky (tack)
 import Codegen (genCode)
 import Control.Exception (try, evaluate, SomeException)
@@ -34,7 +35,8 @@ main = do
         let optIs = (== getProgType (tail args))
             result = contUnless (optIs Lex) (lexer input) >>= 
                      contUnless (optIs Parse) . parser >>= 
-                     contUnless (optIs Semantic) . resolve >>=
+                     contUnless (optIs Parse) . resolve >>=
+                     contUnless (optIs Semantic) . resolveType >>=
                      contUnless (optIs Tacky) . tack >>=
                      contUnless (optIs Codegen) . genCode
         case result of 

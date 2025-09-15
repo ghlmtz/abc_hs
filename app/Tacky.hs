@@ -48,9 +48,12 @@ data Instruction = Return Value
 data Value = Constant P.Const | Var String
     deriving (Show)
 
-tack :: (T.TypeProg, M.Map String (Type, IdentAttr)) -> Either String (TackyProg, M.Map String (Type, IdentAttr))
-tack (prog, syms) = Right (prog', syms)
-    where prog' = combo (TackyProg (convertSyms (M.assocs syms))) $ fst $ evalRWS (scan prog) M.empty (TackyState 0 0 syms)
+tack :: (T.TypeProg, SymbolMap) -> Either String (TackyProg, SymbolMap)
+tack (prog, syms) = Right (bar syms plotz)
+    where plotz = runRWS (scan prog) M.empty (TackyState 0 0 syms)
+
+bar :: SymbolMap -> (TackyProg, TackyState, [Instruction]) -> (TackyProg, SymbolMap)
+bar syms (p, st, _) = (combo (TackyProg (convertSyms (M.assocs syms))) p, symbols st)
 
 combo :: TackyProg -> TackyProg -> TackyProg
 combo (TackyProg a) (TackyProg b) = TackyProg (b ++ a)

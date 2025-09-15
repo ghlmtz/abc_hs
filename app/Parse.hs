@@ -34,7 +34,7 @@ instance Show StaticInit where show :: StaticInit -> String
                                show = showStatic
 showStatic :: StaticInit -> String
 showStatic (IntInit x) = show x
-showStatic (LongInit x) = show x ++ "L"
+showStatic (LongInit x) = show x
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
     deriving (Show)
