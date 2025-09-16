@@ -176,10 +176,6 @@ expr (T.TypedExpr (T.Assignment (T.TypedExpr (T.Var v) _) right) _) = do
   rs <- expr right
   tell [Copy rs (Var v)]
   return (Var v)
-expr (T.TypedExpr (T.CompoundAssignment op vv@(T.TypedExpr (T.Var v) _) right) t) = do
-  rs <- expr $ T.TypedExpr (T.Binary op vv right) t
-  tell [Copy rs (Var v)]
-  return (Var v)
 expr (T.TypedExpr (T.Unary P.PreInc e) _) = incDec Add e False
 expr (T.TypedExpr (T.Unary P.PostInc e) _) = incDec Add e True
 expr (T.TypedExpr (T.Unary P.PreDec e) _) = incDec Subtract e False
@@ -275,7 +271,7 @@ makeCase :: Value -> [Char] -> StaticInit -> TackyMonad ()
 makeCase cond name (IntInit n) = do
   end <- tmpLabel "end"
   dst <- tackyVar TInt
-  let lblName = name ++ "." ++ show n
+  let lblName = if n >= 0 then name ++ "." ++ show n else name ++ ".m" ++ show (-n)
   tell
     [ Binary Equal cond (Constant (ConstInt (fromIntegral n))) dst,
       JZero dst end,
@@ -285,7 +281,7 @@ makeCase cond name (IntInit n) = do
 makeCase cond name (LongInit n) = do
   end <- tmpLabel "end"
   dst <- tackyVar TLong
-  let lblName = name ++ "." ++ show n
+  let lblName = if n >= 0 then name ++ "." ++ show n else name ++ ".m" ++ show (-n)
   tell
     [ Binary Equal cond (Constant (ConstInt (fromIntegral n))) dst,
       JZero dst end,

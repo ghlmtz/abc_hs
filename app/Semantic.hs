@@ -48,7 +48,7 @@ data Statement
   | If Expr Statement (Maybe Statement)
   | Switch Expr Statement String [Maybe StaticInit]
   | Labelled String Statement
-  | Case Expr Statement
+  | Case String StaticInit Statement
   | Default Statement
   | Break String
   | Continue String
@@ -136,7 +136,7 @@ gotoStmt (If e1 s1 s2) = do
 gotoStmt (Switch e s n c) = do
   s' <- gotoStmt s
   return $ Switch e s' n c
-gotoStmt (Case e s) = Case e <$> gotoStmt s
+gotoStmt (Case l e s) = Case l e <$> gotoStmt s
 gotoStmt (Default s) = Default <$> gotoStmt s
 gotoStmt (DoWhile s e n) = do
   s' <- gotoStmt s
@@ -220,9 +220,14 @@ newLoopLabel new l = l {breakLabel = Just new, continueLabel = Just new}
 newSwitchLabel :: String -> [Maybe StaticInit] -> LocalVars -> LocalVars
 newSwitchLabel new lbls l = l {breakLabel = Just new, switchLabel = Just new, localSwitch = lbls}
 
+plotz :: StaticInit -> StaticInit
+plotz (IntInit x) = IntInit (-x)
+plotz (LongInit x) = LongInit (-x)
+
 evalConstant :: Expr -> Maybe StaticInit
 evalConstant (Constant (P.ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (Constant (P.ConstLong i)) = Just (LongInit (fromIntegral i))
+evalConstant (Unary Negate e) = plotz <$> evalConstant e
 evalConstant _ = Nothing
 
 resolveStmt :: P.Statement -> SemanticMonad Statement
@@ -256,7 +261,7 @@ resolveStmt (P.Case e s) = do
       lbls <- gets switchLabels
       when (n' `elem` lbls) $ writeError "Duplicate case!"
       modify $ \x -> x {switchLabels = n' : lbls}
-      return $ Labelled (l' ++ "." ++ show (fromJust n')) s1
+      return $ Case l' (fromJust n') s1
     Nothing -> writeError "Not in switch!"
 resolveStmt (P.Default s) = do
   l <- asks switchLabel

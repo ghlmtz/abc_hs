@@ -13,12 +13,14 @@ module TypeCheck
   )
 where
 
-import Control.Monad.State
+import Control.Monad.RWS.Strict
 import Data.List (nub)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isNothing)
 import Parse (BinaryOp (..), Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..))
 import qualified Semantic as S
+import Data.Void (Void)
+import Data.Int (Int32, Int64)
 
 data IdentAttr
   = FunAttr {fDef :: Bool, fGlobal :: Bool}
@@ -35,6 +37,8 @@ data TypeState = TypeState
     blockScope :: Bool,
     funType :: Maybe Type
   }
+
+newtype TypeReader = TypeReader { switchType :: Maybe Type }
 
 data TypedExpr = TypedExpr Expr Type
   deriving (Show)
@@ -97,17 +101,17 @@ data BlockItem = S Statement | D Declaration
 newtype TypeProg = TypeProg [Declaration]
   deriving (Show)
 
-type TypeMonad m = State TypeState m
+type TypeMonad = RWS TypeReader [Void] TypeState
 
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x {err = Just s}) *> error s
 
 resolveType :: S.SProgram -> Either String (TypeProg, M.Map String (Type, IdentAttr))
 resolveType prog = do
-  let result = runState (typeProg prog) (TypeState M.empty Nothing False Nothing)
-  case err (snd result) of
+  let (prog', state', _) = runRWS (typeProg prog) (TypeReader Nothing) (TypeState M.empty Nothing False Nothing)
+  case err state' of
     Just e -> Left e
-    Nothing -> Right (fst result, symbols (snd result))
+    Nothing -> Right (prog', symbols state')
 
 typeProg :: S.SProgram -> TypeMonad TypeProg
 typeProg (S.SProgram f) = TypeProg <$> mapM typeDecl f
@@ -259,9 +263,10 @@ blockVar (S.VarDecl name s t initial) = do
   case initial of
     Just x -> do
       e <- typeExpr x
-      let ex = if snd e /= t
-                  then Cast t (uncurry TypedExpr e)
-                  else fst e
+      let ex =
+            if snd e /= t
+              then Cast t (uncurry TypedExpr e)
+              else fst e
       return $ VarDecl name s t (Just ex)
     Nothing -> return $ VarDecl name s t Nothing
 blockVar _ = error "Unreachable"
@@ -269,6 +274,9 @@ blockVar _ = error "Unreachable"
 typeItem :: S.BlockItem -> TypeMonad BlockItem
 typeItem (S.S stmt) = S <$> typeStmt stmt
 typeItem (S.D decl) = D <$> typeDecl decl
+
+small :: Int64 -> Int32
+small = fromIntegral
 
 typeStmt :: S.Statement -> TypeMonad Statement
 typeStmt (S.Labelled name stmt) = Labelled name <$> typeStmt stmt
@@ -280,14 +288,22 @@ typeStmt (S.If e1 s1 s2) = do
   return $ If (fst e1') s1' s2'
 typeStmt (S.Switch e s n cs) = do
   e' <- typeExpr e
-  s' <- typeStmt s
+  s' <- local (\l -> l {switchType = Just (snd e')}) $ typeStmt s
   let frotz t c = case c of
         IntInit x -> if t == TLong then LongInit (fromIntegral x) else IntInit x
         LongInit x -> if t == TLong then LongInit x else IntInit (fromIntegral x)
   let newV = map (fmap (frotz (snd e'))) cs
   when (nub newV /= newV) $ writeError "Duplicate case statement"
   return $ Switch (fst e') s' n newV
-typeStmt (S.Case e s) = Case . fst <$> typeExpr e <*> typeStmt s
+typeStmt (S.Case lbl e s) = do
+  ty <- asks (fromJust . switchType)
+  let label = case e of 
+          IntInit x -> show x
+          LongInit x -> if ty /= TInt 
+            then show x
+            else show (small x)
+      label' = if head label == '-' then "m" ++ tail label else label
+  Labelled (lbl ++ "." ++ label') <$> typeStmt s
 typeStmt (S.Default s) = Default <$> typeStmt s
 typeStmt (S.DoWhile s e n) = do
   s' <- typeStmt s
@@ -344,9 +360,9 @@ typeExpr (S.Var v) = do
     _ -> writeError "Function name used as variable"
 typeExpr (S.CompoundAssignment op e r) = do
   left <- typeExpr e
-  right <- typeExpr r
+  right <- typeExpr (S.Binary op e r)
   let convR = convertTo (uncurry TypedExpr right) (snd left)
-  return (CompoundAssignment op (uncurry TypedExpr left) convR, snd left)
+  return (Assignment (uncurry TypedExpr left) convR, snd left)
 typeExpr (S.Assignment e r) = do
   left <- typeExpr e
   right <- typeExpr r

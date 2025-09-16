@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.11.0.0 -- 2025-09-16
+
+* Chapter 11 was a real pain getting the types set up but I'm through, and the code has had some tidying done on it.
+
 ## 0.10.0.0 -- 2025-09-04
 
 * Chapter 10 and Part I complete! Code is in bad need of refactoring and I will likely do some cleanup before going into Part II. It was confirmed that more advanced constant expressions aren't part of the book since static variables should get those too.
