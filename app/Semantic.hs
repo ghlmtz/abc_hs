@@ -223,10 +223,14 @@ newSwitchLabel new lbls l = l {breakLabel = Just new, switchLabel = Just new, lo
 plotz :: StaticInit -> StaticInit
 plotz (IntInit x) = IntInit (-x)
 plotz (LongInit x) = LongInit (-x)
+plotz (UIntInit _) = error "Sign on unsigned int"
+plotz (ULongInit _) = error "Sign on unsigned long"
 
 evalConstant :: Expr -> Maybe StaticInit
 evalConstant (Constant (P.ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (Constant (P.ConstLong i)) = Just (LongInit (fromIntegral i))
+evalConstant (Constant (P.ConstUInt i)) = Just (UIntInit (fromIntegral i))
+evalConstant (Constant (P.ConstULong i)) = Just (ULongInit (fromIntegral i))
 evalConstant (Unary Negate e) = plotz <$> evalConstant e
 evalConstant _ = Nothing
 

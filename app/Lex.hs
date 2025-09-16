@@ -18,6 +18,8 @@ data CToken
   = Identifier String
   | Constant Integer
   | LConstant Integer
+  | UConstant Integer
+  | ULConstant Integer
   | LeftParen
   | RightParen
   | LeftBrace
@@ -76,6 +78,8 @@ data CToken
   | Static
   | Extern
   | Long
+  | Signed
+  | Unsigned
   deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -106,10 +110,29 @@ parseIdent = do
 parseConstant :: Parser CToken
 parseConstant = do
   digits <- some digitChar
-  long <- optional (char 'l' <|> char 'L') <* notFollowedBy (letterChar <|> char '_')
-  return $ case long of
+  ul <-
+    optional
+      ( string "ul"
+          <|> string "UL"
+          <|> string "uL"
+          <|> string "Ul"
+          <|> string "lu"
+          <|> string "LU"
+          <|> string "Lu"
+          <|> string "lU"
+          <|> string "l"
+          <|> string "L"
+          <|> string "u"
+          <|> string "U"
+      )
+      <* notFollowedBy (letterChar <|> char '_')
+  return $ case ul of
     Nothing -> Constant (read digits)
-    _ -> LConstant (read digits)
+    Just "l" -> LConstant (read digits)
+    Just "L" -> LConstant (read digits)
+    Just "u" -> UConstant (read digits)
+    Just "U" -> UConstant (read digits)
+    _ -> ULConstant (read digits)
 
 parseSymbols :: Parser CToken
 parseSymbols =
@@ -160,8 +183,10 @@ reserved =
     ("int", Int),
     ("long", Long),
     ("return", Return),
+    ("signed", Signed),
     ("static", Static),
     ("switch", Switch),
+    ("unsigned", Unsigned),
     ("void", Void),
     ("while", While)
   ]

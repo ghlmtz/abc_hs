@@ -19,8 +19,10 @@ module Parse
 where
 
 import Control.Monad.Combinators.Expr
-import Data.Int
+import Data.Int (Int32, Int64)
+import Data.Maybe (isJust)
 import Data.Void (Void)
+import Data.Word (Word32, Word64)
 import Lex (CToken)
 import qualified Lex as L
 import Text.Megaparsec
@@ -29,7 +31,7 @@ type TokenParser = Parsec Void [CToken]
 
 type MayError = Either String
 
-data StaticInit = IntInit Int32 | LongInit Int64
+data StaticInit = IntInit Int32 | LongInit Int64 | UIntInit Word32 | ULongInit Word64
   deriving (Eq)
 
 instance Show StaticInit where
@@ -39,6 +41,8 @@ instance Show StaticInit where
 showStatic :: StaticInit -> String
 showStatic (IntInit x) = show x
 showStatic (LongInit x) = show x
+showStatic (UIntInit x) = show x
+showStatic (ULongInit x) = show x
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
   deriving (Show)
@@ -54,6 +58,7 @@ data BinaryOp
   | Xor
   | LeftShift
   | RightShift
+  | RightLShift
   | LogAnd
   | LogOr
   | Equal
@@ -67,7 +72,7 @@ data BinaryOp
 data Storage = Static | Extern
   deriving (Show, Eq)
 
-data Const = ConstInt Integer | ConstLong Integer
+data Const = ConstInt Integer | ConstLong Integer | ConstUInt Integer | ConstULong Integer
   deriving (Show, Eq)
 
 data Expr
@@ -101,6 +106,8 @@ data Declaration
 data Type
   = TInt
   | TLong
+  | TUInt
+  | TULong
   | TFun
       { fArgTypes :: [Type],
         fRet :: Type
@@ -137,6 +144,8 @@ data BlockItem = S Statement | D Declaration
 newtype Program = Program [Declaration]
   deriving (Show)
 
+data Sign = Signed | Unsigned
+
 parser :: [CToken] -> MayError Program
 parser = either (Left . show) Right . parse (program <* eof) "abc_parse"
 
@@ -154,16 +163,23 @@ getIdent = getStr <$> satisfy isIdent
 program :: TokenParser Program
 program = Program <$> many declaration
 
+typeCalc :: Bool -> Maybe Sign -> Type
+typeCalc long sign =
+  let t = if long then TLong else TInt
+   in case sign of
+        Just Unsigned -> if t == TLong then TULong else TUInt
+        _ -> t
+
 function :: TokenParser Declaration
 function = do
   specs <- some specifier
   name <- getIdent
   ps <- isToken L.LeftParen *> params <* isToken L.RightParen
   body <- (Just <$> block) <|> (isToken L.Semicolon >> return Nothing)
-  let (_, long, storage) = foldl foldSpec (False, False, Nothing) specs
+  let (_, long, sign, storage) = foldl foldSpec (False, False, Nothing, Nothing) specs
       types = map fst ps
       names = map snd ps
-      t = if long then TLong else TInt
+      t = typeCalc long sign
   return $ FuncDecl name names storage (TFun types t) body
 
 params :: TokenParser [(Type, String)]
@@ -174,16 +190,10 @@ params =
 
 param :: TokenParser (Type, String)
 param = do
-  t <- some (isToken L.Int <|> isToken L.Long)
+  specs <- some typeSpecifier
   i <- getIdent
-  return (checkType t, i)
-
-checkType :: [CToken] -> Type
-checkType [L.Int] = TInt
-checkType [L.Long] = TLong
-checkType [L.Int, L.Long] = TLong
-checkType [L.Long, L.Int] = TLong
-checkType _ = error "Invalid type specifier"
+  let (_, long, sign, _) = foldl foldSpec (False, False, Nothing, Nothing) specs
+  return (typeCalc long sign, i)
 
 blockItem :: TokenParser BlockItem
 blockItem = D <$> declaration <|> S <$> statement
@@ -200,28 +210,37 @@ variable = do
   name <- getIdent
   assign <- optional (isToken L.Equal *> expr)
   _ <- isToken L.Semicolon
-  let (nt, long, storage) = foldl foldSpec (False, False, Nothing) specs
-      t = if long then TLong else TInt
-  if not (nt || long)
+  let (nt, long, sign, storage) = foldl foldSpec (False, False, Nothing, Nothing) specs
+      t = typeCalc long sign
+  if not (nt || long || isJust sign)
     then error "No type"
     else
       return $ VarDecl name storage t assign
 
-foldSpec :: (Bool, Bool, Maybe Storage) -> (Bool, Bool, Maybe Storage) -> (Bool, Bool, Maybe Storage)
-foldSpec (False, b, c) (True, _, _) = (True, b, c)
-foldSpec (a, False, c) (_, True, _) = (a, True, c)
-foldSpec (a, b, Nothing) (_, _, Just x) = (a, b, Just x)
+foldSpec :: (Bool, Bool, Maybe Sign, Maybe Storage) -> (Bool, Bool, Maybe Sign, Maybe Storage) -> (Bool, Bool, Maybe Sign, Maybe Storage)
+foldSpec (False, b, c, d) (True, _, _, _) = (True, b, c, d)
+foldSpec (a, False, c, d) (_, True, _, _) = (a, True, c, d)
+foldSpec (a, b, Nothing, d) (_, _, Just x, _) = (a, b, Just x, d)
+foldSpec (a, b, c, Nothing) (_, _, _, Just x) = (a, b, c, Just x)
 foldSpec _ _ = error "Invalid specifier"
 
-specifier :: TokenParser (Bool, Bool, Maybe Storage)
-specifier =
-  (True, False, Nothing)
+typeSpecifier :: TokenParser (Bool, Bool, Maybe Sign, Maybe a)
+typeSpecifier =
+  (True, False, Nothing, Nothing)
     <$ isToken L.Int
-      <|> (False, True, Nothing)
+      <|> (False, True, Nothing, Nothing)
     <$ isToken L.Long
-      <|> (False, False, Just Static)
+      <|> (False, False, Just Signed, Nothing)
+    <$ isToken L.Signed
+      <|> (False, False, Just Unsigned, Nothing)
+    <$ isToken L.Unsigned
+
+specifier :: TokenParser (Bool, Bool, Maybe Sign, Maybe Storage)
+specifier =
+  typeSpecifier
+    <|> (False, False, Nothing, Just Static)
     <$ isToken L.Static
-      <|> (False, False, Just Extern)
+      <|> (False, False, Nothing, Just Extern)
     <$ isToken L.Extern
 
 statement :: TokenParser Statement
@@ -336,6 +355,8 @@ term' :: TokenParser Expr
 term' =
   constant
     <|> lConstant
+    <|> uConstant
+    <|> ulConstant
     <|> var
     <|> unary
     <|> try cast
@@ -343,8 +364,9 @@ term' =
 
 cast :: TokenParser Expr
 cast = do
-  t <- between (isToken L.LeftParen) (isToken L.RightParen) $ some (isToken L.Int <|> isToken L.Long)
-  Cast (checkType t) <$> term
+  t <- between (isToken L.LeftParen) (isToken L.RightParen) $ some typeSpecifier
+  let (_, long, sign, _) = foldl foldSpec (False, False, Nothing, Nothing) t
+  Cast (typeCalc long sign) <$> term
 
 var :: TokenParser Expr
 var = do
@@ -371,6 +393,26 @@ lConstant = do
       getConstant (L.LConstant x) = x
       getConstant _ = 0
   Constant . ConstLong . getConstant <$> satisfy isConstant
+
+uConstant :: TokenParser Expr
+uConstant = do
+  let isConstant (L.UConstant _) = True
+      isConstant _ = False
+      getConstant (L.UConstant x) = x
+      getConstant _ = 0
+  c <- satisfy isConstant
+  return $
+    if getConstant c + 1 > (^) (2 :: Integer) (32 :: Integer)
+      then Constant (ConstULong (getConstant c))
+      else Constant (ConstUInt (getConstant c))
+
+ulConstant :: TokenParser Expr
+ulConstant = do
+  let isConstant (L.ULConstant _) = True
+      isConstant _ = False
+      getConstant (L.ULConstant x) = x
+      getConstant _ = 0
+  Constant . ConstULong . getConstant <$> satisfy isConstant
 
 unaryPostfix :: TokenParser UnaryOp
 unaryPostfix =

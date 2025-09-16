@@ -5,6 +5,7 @@ where
 
 import Codegen
 import qualified Parse as P
+import TypeCheck (getStatic)
 
 showType :: AsmType -> String
 showType Longword = "l"
@@ -17,6 +18,10 @@ showCode L = "l"
 showCode LE = "le"
 showCode G = "g"
 showCode GE = "ge"
+showCode A = "a"
+showCode AE = "ae"
+showCode B = "b"
+showCode BE = "be"
 
 showOperand :: Operand -> String
 showOperand (Imm i) = "$" ++ show i
@@ -58,6 +63,7 @@ showInstruction Ret = "\tmovq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
 showInstruction (Unary un ty op) = showUnaryOp un ++ showType ty ++ "\t" ++ showOperandType ty op
 showInstruction (Binary bi ty op1 op2) = showBinaryOp bi ++ showType ty ++ "\t" ++ showOperandType ty op1 ++ ", " ++ showOperandType ty op2
 showInstruction (IDiv ty op) = "\tidiv" ++ showType ty ++ "\t" ++ showOperandType ty op
+showInstruction (Div ty op) = "\tdiv" ++ showType ty ++ "\t" ++ showOperandType ty op
 showInstruction (Cdq Longword) = "\tcdq"
 showInstruction (Cdq Quadword) = "\tcqo"
 showInstruction (Label lbl) = ".L" ++ lbl ++ ":"
@@ -76,12 +82,10 @@ showTopLevel :: TopLevel -> [Char]
 showTopLevel (FuncDef s global is) =
   showGlobal s global ++ "\t.text\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . showInstruction) is
 showTopLevel (StaticVar s global align initial) =
-  let dat = if initial == P.IntInit 0 || initial == P.LongInit 0 then "\t.bss\n" else "\t.data\n"
-      i = case initial of
-        (P.IntInit 0) -> ":\n\t.zero 4"
-        (P.LongInit 0) -> ":\n\t.zero 8"
-        (P.IntInit x) -> ":\n\t.long " ++ show x
-        (P.LongInit x) -> ":\n\t.quad " ++ show x
+  let dat = if initial == P.IntInit 0 || initial == P.LongInit 0 || initial == P.UIntInit 0 || initial == P.ULongInit 0 then "\t.bss\n" else "\t.data\n"
+      i = case getStatic initial of
+        0 -> ":\n\t.zero " ++ show align
+        x -> if align == 4 then ":\n\t.long " ++ show x else ":\n\t.quad " ++ show x
    in showGlobal s global ++ dat ++ "\t.align " ++ show align ++ "\n" ++ s ++ i ++ "\n"
 
 showUnaryOp :: UnaryOp -> [Char]
@@ -97,6 +101,7 @@ showBinaryOp Or = "\tor"
 showBinaryOp Xor = "\txor"
 showBinaryOp LeftShift = "\tsal"
 showBinaryOp RightShift = "\tsar"
+showBinaryOp RightLShift = "\tshr"
 
 type MayError = Either String
 

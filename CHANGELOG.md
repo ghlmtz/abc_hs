@@ -1,5 +1,9 @@
 # Revision history for abc
 
+## 0.12.0.0 -- 2025-09-16
+
+* Chapter 12 was a relative breeze. Still some warnings to clean up but all tests pass. Given how daunting floating points look I'm going to do some more refactoring.
+
 ## 0.11.0.0 -- 2025-09-16
 
 * Chapter 11 was a real pain getting the types set up but I'm through, and the code has had some tidying done on it.
