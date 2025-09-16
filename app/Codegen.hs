@@ -13,9 +13,7 @@ module Codegen
 where
 
 import Control.Monad.RWS
-import Data.List (elemIndex)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe)
 import qualified Parse as P
 import qualified Tacky as T
 import TypeCheck (IdentAttr (..))
@@ -71,7 +69,7 @@ data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11 | SP
   deriving (Show)
 
 newtype CodeState = CodeState
-  { varList :: [String]
+  { varList :: M.Map String Integer
   }
 
 newtype CodeReader = CodeReader
@@ -83,7 +81,7 @@ type CodeMonad = RWS CodeReader [Instruction] CodeState
 type MayError = Either String
 
 genCode :: (T.TackyProg, M.Map String (P.Type, IdentAttr)) -> MayError Program
-genCode (prog, syms) = pure $ fst $ evalRWS (pass1 prog) (CodeReader syms) (CodeState [])
+genCode (prog, syms) = pure $ fst $ evalRWS (pass1 prog) (CodeReader syms) (CodeState M.empty)
 
 pass1 :: T.TackyProg -> CodeMonad Program
 pass1 (T.TackyProg f) = Program <$> mapM topLevel f
@@ -99,9 +97,10 @@ topLevel (T.FuncDef name global params stmt) = do
   (_, parsedStmts) <- listen $ do
     zipWithM_ parseParams [0 ..] params
     mapM_ statement stmt
-  len <- gets (length . varList)
-  let s = negate $ (+ 4) $ convertIdx len
+  len <- minOfVars
+  let s = negate len
       s' = ((s - s `mod` 16) `div` 16) * 16 + 16
+  modify $ \x -> x {varList = M.empty}
   return $ FuncDef name global (allocateStack s' : parsedStmts)
 topLevel (T.StaticVar name global P.TInt initial) = return $ StaticVar name global 4 initial
 topLevel (T.StaticVar name global P.TLong initial) = return $ StaticVar name global 8 initial
@@ -119,9 +118,9 @@ parseParams n x = do
 
 fixCmp :: AsmType -> Operand -> Operand -> CodeMonad ()
 fixCmp t v1 v2 = do
-  let v1' = if isStack v1 then Reg R10 else v1
+  let v1' = if isStack v1 || checkLargeImm2 v1 then Reg R10 else v1
       v2' = if isConstant v2 then Reg R11 else v2
-  tell $ [Mov t v1 (Reg R10) | isStack v1] ++ [Mov t v2 (Reg R11) | isConstant v2] ++ [Cmp t v1' v2']
+  tell $ [Mov t v1 (Reg R10) | isStack v1 || checkLargeImm2 v1] ++ [Mov t v2 (Reg R11) | isConstant v2] ++ [Cmp t v1' v2']
 
 statement :: T.Instruction -> CodeMonad ()
 statement (T.Return e) = do
@@ -150,7 +149,6 @@ statement (T.JZero cond target) = do
 statement (T.JNZero cond target) = do
   (t, e') <- expr cond
   fixCmp t (Imm 0) e'
-  tell [JmpCC E target]
   tell [JmpCC NE target]
 statement (T.Label lbl) = tell [Label lbl]
 statement (T.Copy src dst) = do
@@ -161,11 +159,11 @@ statement (T.FunctionCall name args dst) = funCall name args dst
 statement (T.SignExtend src dst) = do
   src' <- expr src
   dst' <- expr dst
-  tell [Movsx (snd src') (snd dst')]
+  fixMovsx (snd src') (snd dst')
 statement (T.Truncate src dst) = do
-  src' <- expr src
-  dst' <- expr dst
-  tell [Mov Longword (snd src') (snd dst')]
+  (_, src') <- expr src
+  (_, dst') <- expr dst
+  fixMov Longword src' dst'
 
 funCall :: String -> [T.Value] -> T.Value -> CodeMonad ()
 funCall name args dst = do
@@ -186,19 +184,25 @@ resolveReg (v, r) = do
   (t, e) <- expr v
   tell [Mov t e r]
 
+fixPush :: Operand -> [Instruction]
+fixPush e = if checkLargeImm2 e 
+    then [Mov Quadword e (Reg R10), Push (Reg8 R10)]
+    else [Push e]
+
 resolveStack :: T.Value -> CodeMonad ()
 resolveStack v = do
   (t, e) <- expr v
   tell $
-    if isStack e || t == Quadword
-      then [Mov Longword e (Reg AX), Push (Reg8 AX)]
-      else [Push e]
+    if not (isStack e) || t == Quadword
+      then fixPush e
+      else [Mov Longword e (Reg AX), Push (Reg8 AX)]
 
 binaryOp :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 binaryOp op
   | op == P.Divide || op == P.Remainder = divide (if op == P.Divide then AX else DX)
   | op == P.LeftShift || op == P.RightShift = shift op
-  | op == P.And || op == P.Or || op == P.Xor || op == P.Multiply = foo op
+  | op == P.And || op == P.Or || op == P.Xor = foo op
+  | op == P.Multiply = mult op
   | op == P.Equal
       || op == P.NotEqual
       || op == P.LessEqual
@@ -220,18 +224,34 @@ condCode _ = error "Invalid binary operand"
 relational :: CondCode -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 relational op st s1 s2 dt dst = fixCmp st s2 s1 >> tell [Mov dt (Imm 0) dst, SetCC op dst]
 
+checkLargeImm :: Operand -> Operand -> Bool
+checkLargeImm (Imm x) dst = x > 2147483647 && isStack dst
+checkLargeImm _ _ = False
+
+checkLargeImm2 :: Operand -> Bool
+checkLargeImm2 (Imm x) = x > 2147483647
+checkLargeImm2 _ = False
+
 fixMov :: AsmType -> Operand -> Operand -> CodeMonad ()
 fixMov t src dst =
   tell $
-    if isStack src && isStack dst
+    if (isStack src && isStack dst) || (t == Quadword && checkLargeImm src dst)
       then [Mov t src (Reg R10), Mov t (Reg R10) dst]
       else [Mov t src dst]
+
+fixMovsx :: Operand -> Operand -> CodeMonad ()
+fixMovsx src dst = do
+    let src' = if isConstant src then Reg R10 else src
+        dst' = if isStack dst then Reg R11 else dst
+    when (isConstant src) $ tell [Mov Longword src (Reg R10)]
+    tell [Movsx src' dst']
+    when (isStack dst) $ tell [Mov Quadword (Reg R11) dst]
 
 genericBinary :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 genericBinary op st s1 s2 _ dst = do
   fixMov st s1 dst
   tell $
-    if isStack s2 && isStack dst
+    if isStack s2 && isStack dst || checkLargeImm2 s2
       then [Mov st s2 (Reg R10), Binary (binOp op) st (Reg R10) dst]
       else [Binary (binOp op) st s2 dst]
 
@@ -243,13 +263,25 @@ divide rx st s1 s2 _ dst = do
     _ -> [IDiv st s2]
   tell [Mov st (Reg rx) dst]
 
+mult :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+mult op st s1 s2 _ dst = do
+  fixMov st s1 dst
+  let s2' = if checkLargeImm2 s2 then Reg R10 else s2
+  when (checkLargeImm2 s2) $ tell [Mov Quadword s2 (Reg R10)]
+  tell $
+    if isStack dst
+      then [Mov st dst (Reg R11), Binary (binOp op) st s2' (Reg R11), Mov st (Reg R11) dst]
+      else [Binary (binOp op) st s2' dst]
+
 foo :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 foo op st s1 s2 _ dst = do
   fixMov st s1 dst
+  let s2' = if checkLargeImm2 s2 then Reg R10 else s2
+  when (checkLargeImm2 s2) $ tell [Mov Quadword s2 (Reg R10)]
   tell $
     if isStack dst
-      then [Mov st dst (Reg R11), Binary (binOp op) st s2 (Reg R11), Mov st (Reg R11) dst]
-      else [Binary (binOp op) st s2 dst]
+      then [Mov st dst (Reg R11), Binary (binOp op) st s2' (Reg R11), Mov st (Reg R11) dst]
+      else [Binary (binOp op) st s2' dst]
 
 shift :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 shift op st s1 s2 _ dst = do
@@ -301,14 +333,18 @@ expr (T.Var v) = do
   case M.lookup v syms of
     Just (t, StaticAttr {}) -> return (asmType t, Data v)
     Just (t, _) ->
-      if v `elem` s
-        then
-          let f = Stack $ convertIdx $ fromMaybe (-1) $ elemIndex v s
-           in return (asmType t, f)
-        else do
-          modify $ \x -> x {varList = s ++ [v]}
-          return (asmType t, Stack $ convertIdx $ length s)
+      case M.lookup v s of
+        Just x -> return (asmType t, Stack x)
+        Nothing -> do
+          minVal <- minOfVars
+          let newVal = if t == P.TLong
+                        then if minVal `mod` 8 /= 0
+                            then minVal - 12
+                            else minVal - 8
+                        else minVal - 4
+          modify $ \x -> x {varList = M.insert v newVal (varList x)}
+          return (asmType t, Stack newVal)
     Nothing -> error "Hmm"
 
-convertIdx :: Int -> Integer
-convertIdx = fromIntegral . (*) (-4) . (+ 1)
+minOfVars :: CodeMonad Integer
+minOfVars = M.foldr min 0 <$> gets varList

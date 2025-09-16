@@ -259,7 +259,10 @@ blockVar (S.VarDecl name s t initial) = do
   case initial of
     Just x -> do
       e <- typeExpr x
-      return $ VarDecl name s t (Just (fst e))
+      let ex = if snd e /= t
+                  then Cast t (uncurry TypedExpr e)
+                  else fst e
+      return $ VarDecl name s t (Just ex)
     Nothing -> return $ VarDecl name s t Nothing
 blockVar _ = error "Unreachable"
 
@@ -360,7 +363,7 @@ typeExpr (S.Binary op e1 e2) = do
   left <- typeExpr e1
   right <- typeExpr e2
   return $
-    if op == And || op == Or
+    if op == LogAnd || op == LogOr
       then (Binary op (uncurry TypedExpr left) (uncurry TypedExpr right), TInt)
       else
         if op == LeftShift || op == RightShift
@@ -370,7 +373,7 @@ typeExpr (S.Binary op e1 e2) = do
                 convL = convertTo (uncurry TypedExpr left) common
                 convR = convertTo (uncurry TypedExpr right) common
             ( Binary op convL convR,
-              if op `elem` [Add, Subtract, Multiply, Divide, Remainder]
+              if op `elem` [Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor]
                 then common
                 else TInt
               )

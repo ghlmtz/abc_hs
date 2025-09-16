@@ -45,19 +45,24 @@ showOperand (Reg8 R11) = "%r11"
 showOperand (Reg8 SP) = "%rsp"
 showOperand (Data name) = name ++ "(%rip)"
 
+showOperandType :: AsmType -> Operand -> String
+showOperandType Longword op@(Reg _) = showOperand op
+showOperandType Quadword (Reg x) = showOperand (Reg8 x)
+showOperandType _ op = showOperand op
+
 showInstruction :: Instruction -> [Char]
-showInstruction (Mov ty o1 o2) = "\tmov" ++ showType ty ++ "\t" ++ showOperand o1 ++ ", " ++ showOperand o2
+showInstruction (Mov ty o1 o2) = "\tmov" ++ showType ty ++ "\t" ++ showOperandType ty o1 ++ ", " ++ showOperandType ty o2
 showInstruction (MovB o1 o2) = "\tmovb\t" ++ showOperand o1 ++ ", " ++ showOperand o2
-showInstruction (Movsx o1 o2) = "\tmovslq\t" ++ showOperand o1 ++ ", " ++ showOperand o2
+showInstruction (Movsx o1 o2) = "\tmovslq\t" ++ showOperandType Longword o1 ++ ", " ++ showOperandType Quadword o2
 showInstruction Ret = "\tmovq\t%rbp, %rsp\n\tpopq\t%rbp\n\tret"
-showInstruction (Unary un ty op) = showUnaryOp un ++ showType ty ++ "\t" ++ showOperand op
-showInstruction (Binary bi ty op1 op2) = showBinaryOp bi ++ showType ty ++ "\t" ++ showOperand op1 ++ ", " ++ showOperand op2
-showInstruction (IDiv ty op) = "\tidiv" ++ showType ty ++ "\t" ++ showOperand op
+showInstruction (Unary un ty op) = showUnaryOp un ++ showType ty ++ "\t" ++ showOperandType ty op
+showInstruction (Binary bi ty op1 op2) = showBinaryOp bi ++ showType ty ++ "\t" ++ showOperandType ty op1 ++ ", " ++ showOperandType ty op2
+showInstruction (IDiv ty op) = "\tidiv" ++ showType ty ++ "\t" ++ showOperandType ty op
 showInstruction (Cdq Longword) = "\tcdq"
 showInstruction (Cdq Quadword) = "\tcqo"
 showInstruction (Label lbl) = ".L" ++ lbl ++ ":"
 showInstruction (Jmp lbl) = "\tjmp\t.L" ++ lbl
-showInstruction (Cmp ty op1 op2) = "\tcmp" ++ showType ty ++ "\t" ++ showOperand op1 ++ ", " ++ showOperand op2
+showInstruction (Cmp ty op1 op2) = "\tcmp" ++ showType ty ++ "\t" ++ showOperandType ty op1 ++ ", " ++ showOperandType ty op2
 showInstruction (JmpCC code lbl) = "\tj" ++ showCode code ++ "\t.L" ++ lbl
 showInstruction (SetCC code op) = "\tset" ++ showCode code ++ "\t" ++ showOperand op
 showInstruction (Call name) = "\tcall\t" ++ name
