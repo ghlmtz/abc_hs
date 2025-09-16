@@ -49,7 +49,6 @@ data Statement
   | Switch Expr Statement String [Maybe StaticInit]
   | Labelled String Statement
   | Case String StaticInit Statement
-  | Default Statement
   | Break String
   | Continue String
   | While Expr Statement String
@@ -137,7 +136,6 @@ gotoStmt (Switch e s n c) = do
   s' <- gotoStmt s
   return $ Switch e s' n c
 gotoStmt (Case l e s) = Case l e <$> gotoStmt s
-gotoStmt (Default s) = Default <$> gotoStmt s
 gotoStmt (DoWhile s e n) = do
   s' <- gotoStmt s
   return $ DoWhile s' e n
@@ -151,30 +149,6 @@ gotoStmt s = return s
 
 resolveProg :: P.Program -> SemanticMonad SProgram
 resolveProg (P.Program f) = SProgram <$> mapM resolveDecl f
-
-resolveFunc :: P.Declaration -> SemanticMonad Declaration
-resolveFunc (P.FuncDecl name params st t blk) = do
-  gm <- gets blockVars
-  level <- asks blockScope
-  when (level && st == Just Static) $ writeError "Cannot have static function at block level"
-  modify $ \x -> x {blockVars = M.insert name (name, True) gm}
-
-  s <- gets (remap . blockVars)
-  (params', blk') <- local s $ do
-    modify $ \x -> x {blockVars = M.empty}
-    mapM_ (resolveDecl . (\x -> P.VarDecl x Nothing TInt Nothing)) params
-    vars <- gets blockVars
-    let params' = map (fst . fromJust . flip M.lookup vars) params
-    blk' <- case blk of
-      Just (P.Block bs) -> Just . Block <$> mapM resolveItem bs
-      Nothing -> return Nothing
-    oldVars <- asks identifierMap
-    modify $ \x -> x {blockVars = oldVars}
-    return (params', blk')
-  g <- gotoFunc $ FuncDecl name params' st t blk'
-  modify $ \x -> x {labels = []}
-  return g
-resolveFunc _ = error "Hmm"
 
 descend :: (a -> SemanticMonad b) -> a -> SemanticMonad b
 descend f arg = do
@@ -332,7 +306,27 @@ resolveDecl (P.VarDecl name s t initial) = do
   case initial of
     Just x -> VarDecl uniq s t . Just <$> resolveExpr x
     Nothing -> return $ VarDecl uniq s t Nothing
-resolveDecl fun = resolveFunc fun
+resolveDecl (P.FuncDecl name params st t blk) = do
+  gm <- gets blockVars
+  level <- asks blockScope
+  when (level && st == Just Static) $ writeError "Cannot have static function at block level"
+  modify $ \x -> x {blockVars = M.insert name (name, True) gm}
+
+  s <- gets (remap . blockVars)
+  (params', blk') <- local s $ do
+    modify $ \x -> x {blockVars = M.empty}
+    mapM_ (resolveDecl . (\x -> P.VarDecl x Nothing TInt Nothing)) params
+    vars <- gets blockVars
+    let params' = map (fst . fromJust . flip M.lookup vars) params
+    blk' <- case blk of
+      Just (P.Block bs) -> Just . Block <$> mapM resolveItem bs
+      Nothing -> return Nothing
+    oldVars <- asks identifierMap
+    modify $ \x -> x {blockVars = oldVars}
+    return (params', blk')
+  g <- gotoFunc $ FuncDecl name params' st t blk'
+  modify $ \x -> x {labels = []}
+  return g
 
 resolveExpr :: P.Expr -> SemanticMonad Expr
 resolveExpr (P.Assignment (P.Var s) r) = do

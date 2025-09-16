@@ -4,13 +4,14 @@ module Tacky
     TopLevel (..),
     Instruction (..),
     Value (..),
+    UnaryOp (..),
   )
 where
 
 import Control.Monad.RWS.Strict
 import qualified Data.Map as M
-import Data.Maybe (catMaybes, isJust)
-import Parse (Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
+import Data.Maybe (catMaybes, mapMaybe)
+import Parse (Const (..), StaticInit (..), Storage (..), Type (..), VarType (..))
 import qualified Parse as P
 import TypeCheck (BinaryOp (..), IdentAttr (..))
 import qualified TypeCheck as T
@@ -38,6 +39,9 @@ data TopLevel
       }
   deriving (Show)
 
+data UnaryOp = Complement | Negate | Not
+  deriving (Show)
+
 data Instruction
   = Return Value
   | Unary UnaryOp Value Value
@@ -57,42 +61,27 @@ data Value = Constant P.Const | Var String
   deriving (Show)
 
 tack :: (T.TypeProg, SymbolMap) -> Either String (TackyProg, SymbolMap)
-tack (prog, syms) = Right (bar syms plotz)
+tack (prog, syms) = bar (runRWS (scan prog) M.empty (TackyState 0 0 syms))
   where
-    plotz = runRWS (scan prog) M.empty (TackyState 0 0 syms)
+    bar (p, st, _) = pure (combo p, symbols st)
+    combo p = TackyProg (p ++ mapMaybe convertSym (M.assocs syms))
+    scan (T.TypeProg f) = catMaybes <$> mapM funcDef f
 
-bar :: SymbolMap -> (TackyProg, TackyState, [Instruction]) -> (TackyProg, SymbolMap)
-bar syms (p, st, _) = (combo (TackyProg (convertSyms (M.assocs syms))) p, symbols st)
+convertSym :: (String, (Type, IdentAttr)) -> Maybe TopLevel
+convertSym (name, (TVar ty, StaticAttr (T.Initial i) global)) = pure $ StaticVar name global ty i
+convertSym (name, (TVar ty, StaticAttr T.Tentative global)) = pure $ case ty of
+  TInt -> StaticVar name global TInt (IntInit 0)
+  TLong -> StaticVar name global TLong (LongInit 0)
+  TUInt -> StaticVar name global TUInt (UIntInit 0)
+  TULong -> StaticVar name global TULong (ULongInit 0)
+convertSym _ = Nothing
 
-combo :: TackyProg -> TackyProg -> TackyProg
-combo (TackyProg a) (TackyProg b) = TackyProg (b ++ a)
-
-convertSyms :: [(String, (P.Type, IdentAttr))] -> [TopLevel]
-convertSyms ((name, (TVar ty, StaticAttr (T.Initial i) global)) : syms) = StaticVar name global ty i : convertSyms syms
-convertSyms ((name, (TVar ty, StaticAttr T.Tentative global)) : syms) = do
-  let f = case ty of
-        TInt -> StaticVar name global TInt (IntInit 0)
-        TLong -> StaticVar name global TLong (LongInit 0)
-        TUInt -> StaticVar name global TUInt (UIntInit 0)
-        TULong -> StaticVar name global TULong (ULongInit 0)
-  f : convertSyms syms
-convertSyms (_ : syms) = convertSyms syms
-convertSyms [] = []
-
-scan :: T.TypeProg -> TackyMonad TackyProg
-scan (T.TypeProg f) = TackyProg <$> mapM funcDef (filter fil f)
-  where
-    fil (T.FuncDecl _ _ _ _ x) = isJust x
-    fil _ = False
-
-funcDef :: T.Declaration -> TackyMonad TopLevel
-funcDef (T.FuncDecl name params _ _ block) = do
+funcDef :: T.Declaration -> TackyMonad (Maybe TopLevel)
+funcDef (T.FuncDecl name params _ _ (Just (T.Block items))) = do
   g <- attrGlobal name
-  FuncDef name g params <$> case block of
-    Just (T.Block items) ->
-      snd <$> listen (mapM blockItem (items ++ [T.S (T.Return (T.Constant (P.ConstInt 0)))]))
-    Nothing -> return []
-funcDef _ = error "Shouldn't happen"
+  w <- listen (mapM blockItem (items ++ [T.S (T.Return (T.Constant (P.ConstInt 0)))]))
+  return $ pure $ FuncDef name g params (snd w)
+funcDef _ = return Nothing
 
 attrGlobal :: String -> TackyMonad Bool
 attrGlobal name = do
@@ -163,7 +152,7 @@ statement (T.For i c p b name) = do
   tell [Label contLbl]
   maybe (return ()) (void . expr . wrap) p
   tell [Jump start, Label brkLbl]
-statement _ = return ()
+statement T.Null = return ()
 
 getType :: T.TypedExpr -> VarType
 getType (T.TypedExpr _ t) = t
@@ -179,14 +168,25 @@ expr (T.TypedExpr (T.Assignment (T.TypedExpr (T.Var v) _) right) _) = do
   rs <- expr right
   tell [Copy rs (Var v)]
   return (Var v)
+expr (T.TypedExpr (T.Assignment {}) _) = error "Invalid assignment lvalue"
 expr (T.TypedExpr (T.Unary P.PreInc e) _) = incDec Add e False
 expr (T.TypedExpr (T.Unary P.PostInc e) _) = incDec Add e True
 expr (T.TypedExpr (T.Unary P.PreDec e) _) = incDec Subtract e False
 expr (T.TypedExpr (T.Unary P.PostDec e) _) = incDec Subtract e True
-expr (T.TypedExpr (T.Unary op e) t) = do
+expr (T.TypedExpr (T.Unary P.Complement e) t) = do
   dst <- tackyVar t
   src <- expr e
-  tell [Unary op src dst]
+  tell [Unary Complement src dst]
+  return dst
+expr (T.TypedExpr (T.Unary P.Negate e) t) = do
+  dst <- tackyVar t
+  src <- expr e
+  tell [Unary Negate src dst]
+  return dst
+expr (T.TypedExpr (T.Unary P.Not e) t) = do
+  dst <- tackyVar t
+  src <- expr e
+  tell [Unary Not src dst]
   return dst
 expr (T.TypedExpr (T.Binary LogAnd e1 e2) t) = do
   false <- tmpLabel "false"
@@ -253,7 +253,6 @@ expr (T.TypedExpr (T.Cast t1 e) _) = do
       dst <- tackyVar t1
       casting t1 t2 ret dst
       return dst
-expr t = error $ "Invalid expression! " ++ show t
 
 casting :: VarType -> VarType -> Value -> Value -> TackyMonad ()
 casting t1 t2 ret dst

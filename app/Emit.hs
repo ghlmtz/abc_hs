@@ -78,12 +78,15 @@ showGlobal :: [Char] -> Bool -> [Char]
 showGlobal s True = "\t.globl " ++ s ++ "\n"
 showGlobal _ False = ""
 
+foo :: P.StaticInit -> Integer
+foo = getStatic
+
 showTopLevel :: TopLevel -> [Char]
 showTopLevel (FuncDef s global is) =
   showGlobal s global ++ "\t.text\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . showInstruction) is
 showTopLevel (StaticVar s global align initial) =
   let dat = if initial == P.IntInit 0 || initial == P.LongInit 0 || initial == P.UIntInit 0 || initial == P.ULongInit 0 then "\t.bss\n" else "\t.data\n"
-      i = case getStatic initial of
+      i = case foo initial of
         0 -> ":\n\t.zero " ++ show align
         x -> if align == 4 then ":\n\t.long " ++ show x else ":\n\t.quad " ++ show x
    in showGlobal s global ++ dat ++ "\t.align " ++ show align ++ "\n" ++ s ++ i ++ "\n"

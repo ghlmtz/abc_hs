@@ -129,16 +129,21 @@ statement :: T.Instruction -> CodeMonad ()
 statement (T.Return e) = do
   (t, e') <- expr e
   tell [Mov t e' (Reg AX), Ret]
-statement (T.Unary P.Not src dst) = do
+statement (T.Unary T.Not src dst) = do
   (st, src') <- expr src
   (dt, dst') <- expr dst
   fixCmp st (Imm 0) src'
   tell [Mov dt (Imm 0) dst', SetCC E dst']
-statement (T.Unary op src dst) = do
+statement (T.Unary T.Complement src dst) = do
   (st, src') <- expr src
   (_, dst') <- expr dst
   fixMov st src' dst'
-  tell [Unary (operand op) st dst']
+  tell [Unary Not st dst']
+statement (T.Unary T.Negate src dst) = do
+  (st, src') <- expr src
+  (_, dst') <- expr dst
+  fixMov st src' dst'
+  tell [Unary Neg st dst']
 statement (T.Binary op s1 s2 dst) = do
   (st, s1') <- expr s1
   (_, s2') <- expr s2
@@ -323,11 +328,6 @@ isStack _ = False
 isConstant :: Operand -> Bool
 isConstant (Imm _) = True
 isConstant _ = False
-
-operand :: P.UnaryOp -> UnaryOp
-operand P.Complement = Not
-operand P.Negate = Neg
-operand _ = error "Bad unary operand"
 
 binOp :: TC.BinaryOp -> BinaryOp
 binOp TC.Add = Add

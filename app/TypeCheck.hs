@@ -76,7 +76,6 @@ data Expr
   | Var String
   | Cast VarType TypedExpr
   | Assignment TypedExpr TypedExpr
-  | CompoundAssignment BinaryOp TypedExpr TypedExpr
   | Conditional TypedExpr TypedExpr TypedExpr
   | FunctionCall String [TypedExpr]
   deriving (Show)
@@ -111,8 +110,6 @@ data Statement
   | If Expr Statement (Maybe Statement)
   | Switch Expr Statement String [Maybe StaticInit]
   | Labelled String Statement
-  | Case Expr Statement
-  | Default Statement
   | Break String
   | Continue String
   | While Expr Statement String
@@ -214,9 +211,9 @@ typeDecl (S.FuncDecl name params s t@(TFun pTypes ret) Nothing) = do
   modify $ \x -> x {symbols = M.insert name (t, FunAttr def g) syms'}
   return $ FuncDecl name params s t Nothing
 typeDecl (S.FuncDecl {}) = writeError "Var in fun decl"
-typeDecl var@(S.VarDecl {}) = do
+typeDecl (S.VarDecl a b c d) = do
   scope <- gets blockScope
-  if scope then blockVar var else fileVar var
+  if scope then blockVar a b c d else fileVar a b c d
 
 funcGlobal :: String -> Maybe Storage -> TypeMonad Bool
 funcGlobal name s = do
@@ -229,8 +226,8 @@ funcGlobal name s = do
         else return (attrGlobal at)
     Nothing -> return g
 
-fileVar :: S.Declaration -> TypeMonad Declaration
-fileVar (S.VarDecl name s typ initial) = do
+fileVar :: String -> Maybe Storage -> VarType -> Maybe S.Expr -> TypeMonad Declaration
+fileVar name s typ initial = do
   let blankVal = if s == Just Extern then NoInitializer else Tentative
       value = maybe (Just blankVal) (fmap Initial . evalConstant) initial
   when (isNothing value) $ writeError "Cannot assign non-constant expr to file var"
@@ -250,7 +247,6 @@ fileVar (S.VarDecl name s typ initial) = do
     Nothing -> return $ fromJust value
   modify $ \x -> x {symbols = M.insert name (TVar typ, StaticAttr newV newG) syms}
   VarDecl name s typ <$> ugly initial
-fileVar _ = error "Unreachable"
 
 isInitial :: InitValue -> Bool
 isInitial (Initial _) = True
@@ -274,25 +270,25 @@ getGlobal name s = do
   let g = s /= Just Static
   syms <- gets symbols
   case M.lookup name syms of
-    Just (TVar t, at) -> do
-      when (t /= TInt && t /= TLong && t /= TUInt && t /= TULong) $ writeError "Function redeclared as variable"
+    Just (TVar _, at) -> do
       if s == Just Extern
         then return (attrGlobal at)
         else
           if attrGlobal at /= g
             then writeError "Conflicting variable linkage"
             else return g
+    Just (TFun {}, _) -> writeError "Function redeclared as variable"
     _ -> return g
 
-convert :: (Integral a) => a -> VarType -> StaticInit
-convert x TLong = LongInit (fromIntegral x)
-convert x TInt = IntInit (fromIntegral x)
-convert x TUInt = UIntInit (fromIntegral x)
-convert x TULong = ULongInit (fromIntegral x)
+convert :: VarType -> StaticInit -> StaticInit
+convert TLong = LongInit . getStatic
+convert TInt = IntInit . getStatic
+convert TUInt = UIntInit . getStatic
+convert TULong = ULongInit . getStatic
 
-blockVar :: S.Declaration -> TypeMonad Declaration
-blockVar (S.VarDecl _ (Just Extern) _ (Just _)) = writeError "Cannot initialize extern var decl"
-blockVar (S.VarDecl name (Just Extern) typ Nothing) = do
+blockVar :: String -> Maybe Storage -> VarType -> Maybe S.Expr -> TypeMonad Declaration
+blockVar _ (Just Extern) _ (Just _) = writeError "Cannot initialize extern var decl"
+blockVar name (Just Extern) typ Nothing = do
   syms <- gets symbols
   case M.lookup name syms of
     Just (TFun {}, _) -> writeError "Function redeclared as variable"
@@ -302,13 +298,13 @@ blockVar (S.VarDecl name (Just Extern) typ Nothing) = do
     _ -> do
       modify $ \x -> x {symbols = M.insert name (TVar typ, StaticAttr NoInitializer True) syms}
       return $ VarDecl name (Just Extern) typ Nothing
-blockVar (S.VarDecl name (Just Static) t initial) = do
+blockVar name (Just Static) t initial = do
   let value = maybe (Just (IntInit 0)) evalConstant initial
   when (isNothing value) $ writeError "Cannot assign non-constant expr to static var"
-  let newV = convert (getStatic (fromJust value)) t
+  let newV = convert t (fromJust value)
   modify $ \x -> x {symbols = M.insert name (TVar t, StaticAttr (Initial newV) True) $ symbols x}
   return $ VarDecl name (Just Static) t Nothing
-blockVar (S.VarDecl name s t initial) = do
+blockVar name s t initial = do
   modify $ \x -> x {symbols = M.insert name (TVar t, LocalAttr) $ symbols x}
   case initial of
     Just x -> do
@@ -319,7 +315,6 @@ blockVar (S.VarDecl name s t initial) = do
               else fst e
       return $ VarDecl name s t (Just ex)
     Nothing -> return $ VarDecl name s t Nothing
-blockVar _ = error "Unreachable"
 
 typeItem :: S.BlockItem -> TypeMonad BlockItem
 typeItem (S.S stmt) = S <$> typeStmt stmt
@@ -336,16 +331,14 @@ typeStmt (S.If e1 s1 s2) = do
 typeStmt (S.Switch e s n cs) = do
   e' <- typeExpr e
   s' <- local (\l -> l {switchType = Just (snd e')}) $ typeStmt s
-  let frotz t c = convert (getStatic c) t
-  let newV = map (fmap (frotz (snd e'))) cs
+  let newV = map (fmap (convert (snd e'))) cs
   when (nub newV /= newV) $ writeError "Duplicate case statement"
   return $ Switch (fst e') s' n newV
 typeStmt (S.Case lbl e s) = do
   ty <- asks (fromJust . switchType)
-  let label = show $ convert (getStatic e) ty
+  let label = show $ convert ty e
       label' = if head label == '-' then "m" ++ tail label else label
   Labelled (lbl ++ "." ++ label') <$> typeStmt s
-typeStmt (S.Default s) = Default <$> typeStmt s
 typeStmt (S.DoWhile s e n) = do
   s' <- typeStmt s
   e' <- typeExpr e
@@ -354,8 +347,8 @@ typeStmt (S.While e s n) = do
   s' <- typeStmt s
   e' <- typeExpr e
   return $ While (fst e') s' n
-typeStmt (S.For (S.InitDecl v@(S.VarDecl {})) e1 e2 s n) = do
-  v' <- blockVar v
+typeStmt (S.For (S.InitDecl (S.VarDecl a b c d)) e1 e2 s n) = do
+  v' <- blockVar a b c d
   s' <- typeStmt s
   e1' <- ugly e1
   e2' <- ugly e2
@@ -404,14 +397,13 @@ binOp P.GreaterThan = GreaterThan
 typeExpr :: S.Expr -> TypeMonad (Expr, VarType)
 typeExpr (S.FunctionCall name args) = do
   t <- gets (M.lookup name . symbols)
-  case t of
-    Just (TVar _, _) -> writeError "Variable used as function name"
-    Just (TFun pTypes ret, _) -> do
+  case fromJust t of
+    (TVar _, _) -> writeError "Variable used as function name"
+    (TFun pTypes ret, _) -> do
       when (length pTypes /= length args) $ writeError "Wrong number of args"
       args' <- mapM typeExpr args
       let convArgs = zipWith convertTo (map (uncurry TypedExpr) args') pTypes
       return (FunctionCall name convArgs, ret)
-    _ -> writeError "This shouldn't happen"
 typeExpr (S.Var v) = do
   t <- gets (M.lookup v . symbols)
   case t of
