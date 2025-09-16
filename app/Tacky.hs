@@ -10,9 +10,9 @@ where
 import Control.Monad.RWS.Strict
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, isJust)
-import Parse (BinaryOp (..), Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..))
+import Parse (Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
 import qualified Parse as P
-import TypeCheck (IdentAttr (..))
+import TypeCheck (BinaryOp (..), IdentAttr (..))
 import qualified TypeCheck as T
 
 data TackyState = TackyState
@@ -33,7 +33,7 @@ data TopLevel
   | StaticVar
       { vName :: String,
         vGlobal :: Bool,
-        vType :: Type,
+        vType :: VarType,
         vInit :: StaticInit
       }
   deriving (Show)
@@ -67,15 +67,14 @@ bar syms (p, st, _) = (combo (TackyProg (convertSyms (M.assocs syms))) p, symbol
 combo :: TackyProg -> TackyProg -> TackyProg
 combo (TackyProg a) (TackyProg b) = TackyProg (b ++ a)
 
-convertSyms :: [(String, (Type, IdentAttr))] -> [TopLevel]
-convertSyms ((name, (ty, StaticAttr (T.Initial i) global)) : syms) = StaticVar name global ty i : convertSyms syms
-convertSyms ((name, (ty, StaticAttr T.Tentative global)) : syms) = do
+convertSyms :: [(String, (P.Type, IdentAttr))] -> [TopLevel]
+convertSyms ((name, (TVar ty, StaticAttr (T.Initial i) global)) : syms) = StaticVar name global ty i : convertSyms syms
+convertSyms ((name, (TVar ty, StaticAttr T.Tentative global)) : syms) = do
   let f = case ty of
         TInt -> StaticVar name global TInt (IntInit 0)
         TLong -> StaticVar name global TLong (LongInit 0)
         TUInt -> StaticVar name global TUInt (UIntInit 0)
         TULong -> StaticVar name global TULong (ULongInit 0)
-        _ -> error "Shouldn't happen"
   f : convertSyms syms
 convertSyms (_ : syms) = convertSyms syms
 convertSyms [] = []
@@ -166,7 +165,7 @@ statement (T.For i c p b name) = do
   tell [Jump start, Label brkLbl]
 statement _ = return ()
 
-getType :: T.TypedExpr -> Type
+getType :: T.TypedExpr -> VarType
 getType (T.TypedExpr _ t) = t
 
 constType :: T.TypedExpr -> Integer -> Const
@@ -174,7 +173,6 @@ constType (T.TypedExpr _ TInt) = ConstInt
 constType (T.TypedExpr _ TLong) = ConstLong
 constType (T.TypedExpr _ TUInt) = ConstUInt
 constType (T.TypedExpr _ TULong) = ConstULong
-constType _ = error "Shouldn't happen"
 
 expr :: T.TypedExpr -> TackyMonad Value
 expr (T.TypedExpr (T.Assignment (T.TypedExpr (T.Var v) _) right) _) = do
@@ -257,7 +255,7 @@ expr (T.TypedExpr (T.Cast t1 e) _) = do
       return dst
 expr t = error $ "Invalid expression! " ++ show t
 
-casting :: Type -> Type -> Value -> Value -> TackyMonad ()
+casting :: VarType -> VarType -> Value -> Value -> TackyMonad ()
 casting t1 t2 ret dst
   | T.size t1 == T.size t2 = tell [Copy ret dst]
   | T.size t1 < T.size t2 = tell [Truncate ret dst]
@@ -339,10 +337,10 @@ incDec op e post = do
       tell middle
       return src
 
-tackyVar :: Type -> TackyMonad Value
+tackyVar :: VarType -> TackyMonad Value
 tackyVar ty = do
   name <- tmpVar
-  modify $ \x -> x {symbols = M.insert name (ty, LocalAttr) (symbols x)}
+  modify $ \x -> x {symbols = M.insert name (TVar ty, LocalAttr) (symbols x)}
   return $ Var name
 
 tmpVar :: TackyMonad String

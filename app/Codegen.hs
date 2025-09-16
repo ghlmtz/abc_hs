@@ -17,6 +17,7 @@ import qualified Data.Map as M
 import qualified Parse as P
 import qualified Tacky as T
 import TypeCheck (IdentAttr (..), signed)
+import qualified TypeCheck as TC
 
 newtype Program = Program [TopLevel]
   deriving (Show)
@@ -107,7 +108,6 @@ topLevel (T.StaticVar name global P.TInt initial) = return $ StaticVar name glob
 topLevel (T.StaticVar name global P.TLong initial) = return $ StaticVar name global 8 initial
 topLevel (T.StaticVar name global P.TUInt initial) = return $ StaticVar name global 4 initial
 topLevel (T.StaticVar name global P.TULong initial) = return $ StaticVar name global 8 initial
-topLevel _ = error "Bad"
 
 regs :: [Operand]
 regs = [Reg DI, Reg SI, Reg DX, Reg CX, Reg R8, Reg R9]
@@ -208,32 +208,32 @@ resolveStack v = do
       then fixPush e
       else [Mov Longword e (Reg AX), Push (Reg8 AX)]
 
-binaryOp :: P.BinaryOp -> P.Type -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+binaryOp :: TC.BinaryOp -> P.VarType -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 binaryOp op ty
-  | op == P.Divide || op == P.Remainder = divide (if op == P.Divide then AX else DX) (signed ty)
-  | op == P.LeftShift || op == P.RightShift || op == P.RightLShift = shift op
-  | op == P.And || op == P.Or || op == P.Xor = foo op
-  | op == P.Multiply = mult op
-  | op == P.Equal
-      || op == P.NotEqual
-      || op == P.LessEqual
-      || op == P.GreaterEqual
-      || op == P.LessThan
-      || op == P.GreaterThan =
+  | op == TC.Divide || op == TC.Remainder = divide (if op == TC.Divide then AX else DX) (signed ty)
+  | op == TC.LeftShift || op == TC.RightShift || op == TC.RightLShift = shift op
+  | op == TC.And || op == TC.Or || op == TC.Xor = foo op
+  | op == TC.Multiply = mult op
+  | op == TC.Equal
+      || op == TC.NotEqual
+      || op == TC.LessEqual
+      || op == TC.GreaterEqual
+      || op == TC.LessThan
+      || op == TC.GreaterThan =
       relational (condCode op (signed ty))
   | otherwise = genericBinary op
 
-condCode :: P.BinaryOp -> Bool -> CondCode
-condCode P.Equal _ = E
-condCode P.NotEqual _ = NE
-condCode P.LessThan True = L
-condCode P.GreaterEqual True = GE
-condCode P.LessEqual True = LE
-condCode P.GreaterThan True = G
-condCode P.LessThan False = B
-condCode P.GreaterEqual False = AE
-condCode P.LessEqual False = BE
-condCode P.GreaterThan False = A
+condCode :: TC.BinaryOp -> Bool -> CondCode
+condCode TC.Equal _ = E
+condCode TC.NotEqual _ = NE
+condCode TC.LessThan True = L
+condCode TC.GreaterEqual True = GE
+condCode TC.LessEqual True = LE
+condCode TC.GreaterThan True = G
+condCode TC.LessThan False = B
+condCode TC.GreaterEqual False = AE
+condCode TC.LessEqual False = BE
+condCode TC.GreaterThan False = A
 condCode _ _ = error "Invalid binary operand"
 
 relational :: CondCode -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
@@ -262,7 +262,7 @@ fixMovsx src dst = do
   tell [Movsx src' dst']
   when (isStack dst) $ tell [Mov Quadword (Reg R11) dst]
 
-genericBinary :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+genericBinary :: TC.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 genericBinary op st s1 s2 _ dst = do
   fixMov st s1 dst
   tell $
@@ -284,7 +284,7 @@ divide rx False st s1 s2 _ dst = do
     _ -> [Div st s2]
   tell [Mov st (Reg rx) dst]
 
-mult :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+mult :: TC.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 mult op st s1 s2 _ dst = do
   fixMov st s1 dst
   let s2' = if checkLargeImm2 s2 then Reg R10 else s2
@@ -294,7 +294,7 @@ mult op st s1 s2 _ dst = do
       then [Mov st dst (Reg R11), Binary (binOp op) st s2' (Reg R11), Mov st (Reg R11) dst]
       else [Binary (binOp op) st s2' dst]
 
-foo :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+foo :: TC.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 foo op st s1 s2 _ dst = do
   fixMov st s1 dst
   let s2' = if checkLargeImm2 s2 then Reg R10 else s2
@@ -304,7 +304,7 @@ foo op st s1 s2 _ dst = do
       then [Mov st dst (Reg R11), Binary (binOp op) st s2' (Reg R11), Mov st (Reg R11) dst]
       else [Binary (binOp op) st s2' dst]
 
-shift :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+shift :: TC.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 shift op st s1 s2 _ dst = do
   let s2_int = ([MovB s2 (Reg1 CX) | isStack s2])
       s2'' = if isStack s2 then Reg1 CX else s2
@@ -329,26 +329,25 @@ operand P.Complement = Not
 operand P.Negate = Neg
 operand _ = error "Bad unary operand"
 
-binOp :: P.BinaryOp -> BinaryOp
-binOp P.Add = Add
-binOp P.Subtract = Sub
-binOp P.Multiply = Mult
-binOp P.And = And
-binOp P.Or = Or
-binOp P.Xor = Xor
-binOp P.LeftShift = LeftShift
-binOp P.RightShift = RightShift
-binOp P.RightLShift = RightLShift
+binOp :: TC.BinaryOp -> BinaryOp
+binOp TC.Add = Add
+binOp TC.Subtract = Sub
+binOp TC.Multiply = Mult
+binOp TC.And = And
+binOp TC.Or = Or
+binOp TC.Xor = Xor
+binOp TC.LeftShift = LeftShift
+binOp TC.RightShift = RightShift
+binOp TC.RightLShift = RightLShift
 binOp _ = error "Bad binary operand"
 
-asmType :: P.Type -> AsmType
+asmType :: P.VarType -> AsmType
 asmType P.TInt = Longword
 asmType P.TLong = Quadword
 asmType P.TUInt = Longword
 asmType P.TULong = Quadword
-asmType _ = error "bad"
 
-cType :: T.Value -> CodeMonad P.Type
+cType :: T.Value -> CodeMonad P.VarType
 cType (T.Constant (P.ConstInt _)) = return P.TInt
 cType (T.Constant (P.ConstLong _)) = return P.TLong
 cType (T.Constant (P.ConstUInt _)) = return P.TUInt
@@ -356,8 +355,8 @@ cType (T.Constant (P.ConstULong _)) = return P.TULong
 cType (T.Var v) = do
   syms <- asks symbols
   case M.lookup v syms of
-    Just (t, _) -> return t
-    Nothing -> error "Hmm"
+    Just (P.TVar t, _) -> return t
+    _ -> error "Hmm"
 
 expr :: T.Value -> CodeMonad (AsmType, Operand)
 expr (T.Constant (P.ConstInt i)) = return (Longword, Imm i)
@@ -368,8 +367,8 @@ expr (T.Var v) = do
   s <- gets varList
   syms <- asks symbols
   case M.lookup v syms of
-    Just (t, StaticAttr {}) -> return (asmType t, Data v)
-    Just (t, _) ->
+    Just (P.TVar t, StaticAttr {}) -> return (asmType t, Data v)
+    Just (P.TVar t, _) ->
       case M.lookup v s of
         Just x -> return (asmType t, Stack x)
         Nothing -> do
@@ -383,7 +382,7 @@ expr (T.Var v) = do
                   else minVal - 4
           modify $ \x -> x {varList = M.insert v newVal (varList x)}
           return (asmType t, Stack newVal)
-    Nothing -> error "Hmm"
+    _ -> error "Hmm"
 
 minOfVars :: CodeMonad Integer
 minOfVars = M.foldr min 0 <$> gets varList

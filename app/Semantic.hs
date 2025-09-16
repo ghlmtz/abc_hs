@@ -14,7 +14,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust, isNothing)
-import Parse (StaticInit (..), Storage (..), Type (..), UnaryOp (..))
+import Parse (StaticInit (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
 import qualified Parse as P
 
 data Expr
@@ -22,7 +22,7 @@ data Expr
   | Unary P.UnaryOp Expr
   | Binary P.BinaryOp Expr Expr
   | Var String
-  | Cast Type Expr
+  | Cast VarType Expr
   | Assignment Expr Expr
   | CompoundAssignment P.BinaryOp Expr Expr
   | Conditional Expr Expr Expr
@@ -31,7 +31,7 @@ data Expr
 
 data Declaration
   = FuncDecl String [String] (Maybe P.Storage) Type (Maybe Block)
-  | VarDecl String (Maybe P.Storage) Type (Maybe Expr)
+  | VarDecl String (Maybe P.Storage) VarType (Maybe Expr)
   deriving (Show)
 
 newtype Block = Block [BlockItem]

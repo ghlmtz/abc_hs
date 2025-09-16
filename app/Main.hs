@@ -55,7 +55,7 @@ contUnless stop input = case input of
   Left e -> Left (Left e)
   Right e -> if stop then Left (Right (show e)) else Right e
 
-cont2Unless :: Bool -> Either a b -> Either (Either a b) b
+cont2Unless :: Bool -> Either a String -> Either (Either a String) String
 cont2Unless stop input = case input of
   Left e -> Left (Left e)
   Right e -> if stop then Left (Right e) else Right e

@@ -15,6 +15,7 @@ module Parse
     Type (..),
     Const (..),
     StaticInit (..),
+    VarType (..),
   )
 where
 
@@ -58,7 +59,6 @@ data BinaryOp
   | Xor
   | LeftShift
   | RightShift
-  | RightLShift
   | LogAnd
   | LogOr
   | Equal
@@ -80,7 +80,7 @@ data Expr
   | Unary UnaryOp Expr
   | Binary BinaryOp Expr Expr
   | Var String
-  | Cast Type Expr
+  | Cast VarType Expr
   | Assignment Expr Expr
   | CompoundAssignment BinaryOp Expr Expr
   | Conditional Expr Expr Expr
@@ -98,19 +98,23 @@ data Declaration
   | VarDecl
       { vName :: String,
         vStorage :: Maybe Storage,
-        vType :: Type,
+        vType :: VarType,
         vInit :: Maybe Expr
       }
   deriving (Show)
 
-data Type
+data VarType
   = TInt
   | TLong
   | TUInt
   | TULong
+  deriving (Show, Eq)
+
+data Type
+  = TVar VarType
   | TFun
-      { fArgTypes :: [Type],
-        fRet :: Type
+      { fArgTypes :: [VarType],
+        fRet :: VarType
       }
   deriving (Show, Eq)
 
@@ -163,7 +167,7 @@ getIdent = getStr <$> satisfy isIdent
 program :: TokenParser Program
 program = Program <$> many declaration
 
-typeCalc :: Bool -> Maybe Sign -> Type
+typeCalc :: Bool -> Maybe Sign -> VarType
 typeCalc long sign =
   let t = if long then TLong else TInt
    in case sign of
@@ -182,13 +186,13 @@ function = do
       t = typeCalc long sign
   return $ FuncDecl name names storage (TFun types t) body
 
-params :: TokenParser [(Type, String)]
+params :: TokenParser [(VarType, String)]
 params =
   []
     <$ isToken L.Void
       <|> sepBy1 param (isToken L.Comma)
 
-param :: TokenParser (Type, String)
+param :: TokenParser (VarType, String)
 param = do
   specs <- some typeSpecifier
   i <- getIdent
