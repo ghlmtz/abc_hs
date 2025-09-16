@@ -50,6 +50,7 @@ data Instruction
   | JNZero Value String
   | Label String
   | FunctionCall String [Value] Value
+  | ZeroExtend Value Value
   deriving (Show)
 
 data Value = Constant P.Const | Var String
@@ -72,6 +73,8 @@ convertSyms ((name, (ty, StaticAttr T.Tentative global)) : syms) = do
   let f = case ty of
         TInt -> StaticVar name global TInt (IntInit 0)
         TLong -> StaticVar name global TLong (LongInit 0)
+        TUInt -> StaticVar name global TUInt (UIntInit 0)
+        TULong -> StaticVar name global TULong (ULongInit 0)
         _ -> error "Shouldn't happen"
   f : convertSyms syms
 convertSyms (_ : syms) = convertSyms syms
@@ -169,6 +172,8 @@ getType (T.TypedExpr _ t) = t
 constType :: T.TypedExpr -> Integer -> Const
 constType (T.TypedExpr _ TInt) = ConstInt
 constType (T.TypedExpr _ TLong) = ConstLong
+constType (T.TypedExpr _ TUInt) = ConstUInt
+constType (T.TypedExpr _ TULong) = ConstULong
 constType _ = error "Shouldn't happen"
 
 expr :: T.TypedExpr -> TackyMonad Value
@@ -243,15 +248,21 @@ expr (T.TypedExpr (T.Conditional eCond eIf eElse) t) = do
   return ret
 expr (T.TypedExpr (T.Cast t1 e) _) = do
   ret <- expr e
-  if t1 == getType e
+  let t2 = getType e
+  if t1 == t2
     then return ret
     else do
       dst <- tackyVar t1
-      case t1 of
-        TLong -> tell [SignExtend ret dst]
-        _ -> tell [Truncate ret dst]
+      casting t1 t2 ret dst
       return dst
 expr t = error $ "Invalid expression! " ++ show t
+
+casting :: Type -> Type -> Value -> Value -> TackyMonad ()
+casting t1 t2 ret dst
+  | T.size t1 == T.size t2 = tell [Copy ret dst]
+  | T.size t1 < T.size t2 = tell [Truncate ret dst]
+  | T.signed t2 = tell [SignExtend ret dst]
+  | otherwise = tell [ZeroExtend ret dst]
 
 switchStmt :: T.Expr -> T.Statement -> [Char] -> [Maybe StaticInit] -> TackyMonad ()
 switchStmt e s name cases = do
@@ -283,7 +294,27 @@ makeCase cond name (LongInit n) = do
   dst <- tackyVar TLong
   let lblName = if n >= 0 then name ++ "." ++ show n else name ++ ".m" ++ show (-n)
   tell
-    [ Binary Equal cond (Constant (ConstInt (fromIntegral n))) dst,
+    [ Binary Equal cond (Constant (ConstLong (fromIntegral n))) dst,
+      JZero dst end,
+      Jump lblName,
+      Label end
+    ]
+makeCase cond name (UIntInit n) = do
+  end <- tmpLabel "end"
+  dst <- tackyVar TUInt
+  let lblName = if n >= 0 then name ++ "." ++ show n else name ++ ".m" ++ show (-n)
+  tell
+    [ Binary Equal cond (Constant (ConstUInt (fromIntegral n))) dst,
+      JZero dst end,
+      Jump lblName,
+      Label end
+    ]
+makeCase cond name (ULongInit n) = do
+  end <- tmpLabel "end"
+  dst <- tackyVar TULong
+  let lblName = if n >= 0 then name ++ "." ++ show n else name ++ ".m" ++ show (-n)
+  tell
+    [ Binary Equal cond (Constant (ConstULong (fromIntegral n))) dst,
       JZero dst end,
       Jump lblName,
       Label end

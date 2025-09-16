@@ -16,7 +16,7 @@ import Control.Monad.RWS
 import qualified Data.Map as M
 import qualified Parse as P
 import qualified Tacky as T
-import TypeCheck (IdentAttr (..))
+import TypeCheck (IdentAttr (..), signed)
 
 newtype Program = Program [TopLevel]
   deriving (Show)
@@ -39,6 +39,7 @@ data Instruction
   | Unary UnaryOp AsmType Operand
   | Binary BinaryOp AsmType Operand Operand
   | IDiv AsmType Operand
+  | Div AsmType Operand
   | Cdq AsmType
   | Cmp AsmType Operand Operand
   | Jmp String
@@ -50,7 +51,7 @@ data Instruction
 data UnaryOp = Neg | Not
   deriving (Show)
 
-data BinaryOp = Add | Sub | Mult | And | Or | Xor | LeftShift | RightShift
+data BinaryOp = Add | Sub | Mult | And | Or | Xor | LeftShift | RightShift | RightLShift
   deriving (Show)
 
 data Operand
@@ -62,7 +63,7 @@ data Operand
   | Data String
   deriving (Show)
 
-data CondCode = E | NE | G | GE | L | LE
+data CondCode = E | NE | G | GE | L | LE | A | AE | B | BE
   deriving (Show)
 
 data Register = AX | CX | DX | DI | SI | R8 | R9 | R10 | R11 | SP
@@ -104,6 +105,8 @@ topLevel (T.FuncDef name global params stmt) = do
   return $ FuncDef name global (allocateStack s' : parsedStmts)
 topLevel (T.StaticVar name global P.TInt initial) = return $ StaticVar name global 4 initial
 topLevel (T.StaticVar name global P.TLong initial) = return $ StaticVar name global 8 initial
+topLevel (T.StaticVar name global P.TUInt initial) = return $ StaticVar name global 4 initial
+topLevel (T.StaticVar name global P.TULong initial) = return $ StaticVar name global 8 initial
 topLevel _ = error "Bad"
 
 regs :: [Operand]
@@ -139,8 +142,9 @@ statement (T.Unary op src dst) = do
 statement (T.Binary op s1 s2 dst) = do
   (st, s1') <- expr s1
   (_, s2') <- expr s2
+  ct <- cType s1
   (dt, dst') <- expr dst
-  binaryOp op st s1' s2' dt dst'
+  binaryOp op ct st s1' s2' dt dst'
 statement (T.Jump target) = tell [Jmp target]
 statement (T.JZero cond target) = do
   (t, e') <- expr cond
@@ -164,6 +168,12 @@ statement (T.Truncate src dst) = do
   (_, src') <- expr src
   (_, dst') <- expr dst
   fixMov Longword src' dst'
+statement (T.ZeroExtend src dst) = do
+  (_, src') <- expr src
+  (_, dst') <- expr dst
+  tell $ case dst' of
+    (Reg _) -> [Mov Longword src' dst']
+    _ -> [Mov Longword src' (Reg R11), Mov Quadword (Reg R11) dst']
 
 funCall :: String -> [T.Value] -> T.Value -> CodeMonad ()
 funCall name args dst = do
@@ -185,7 +195,8 @@ resolveReg (v, r) = do
   tell [Mov t e r]
 
 fixPush :: Operand -> [Instruction]
-fixPush e = if checkLargeImm2 e 
+fixPush e =
+  if checkLargeImm2 e
     then [Mov Quadword e (Reg R10), Push (Reg8 R10)]
     else [Push e]
 
@@ -197,10 +208,10 @@ resolveStack v = do
       then fixPush e
       else [Mov Longword e (Reg AX), Push (Reg8 AX)]
 
-binaryOp :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
-binaryOp op
-  | op == P.Divide || op == P.Remainder = divide (if op == P.Divide then AX else DX)
-  | op == P.LeftShift || op == P.RightShift = shift op
+binaryOp :: P.BinaryOp -> P.Type -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+binaryOp op ty
+  | op == P.Divide || op == P.Remainder = divide (if op == P.Divide then AX else DX) (signed ty)
+  | op == P.LeftShift || op == P.RightShift || op == P.RightLShift = shift op
   | op == P.And || op == P.Or || op == P.Xor = foo op
   | op == P.Multiply = mult op
   | op == P.Equal
@@ -209,17 +220,21 @@ binaryOp op
       || op == P.GreaterEqual
       || op == P.LessThan
       || op == P.GreaterThan =
-      relational (condCode op)
+      relational (condCode op (signed ty))
   | otherwise = genericBinary op
 
-condCode :: P.BinaryOp -> CondCode
-condCode P.Equal = E
-condCode P.NotEqual = NE
-condCode P.LessThan = L
-condCode P.GreaterEqual = GE
-condCode P.LessEqual = LE
-condCode P.GreaterThan = G
-condCode _ = error "Invalid binary operand"
+condCode :: P.BinaryOp -> Bool -> CondCode
+condCode P.Equal _ = E
+condCode P.NotEqual _ = NE
+condCode P.LessThan True = L
+condCode P.GreaterEqual True = GE
+condCode P.LessEqual True = LE
+condCode P.GreaterThan True = G
+condCode P.LessThan False = B
+condCode P.GreaterEqual False = AE
+condCode P.LessEqual False = BE
+condCode P.GreaterThan False = A
+condCode _ _ = error "Invalid binary operand"
 
 relational :: CondCode -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 relational op st s1 s2 dt dst = fixCmp st s2 s1 >> tell [Mov dt (Imm 0) dst, SetCC op dst]
@@ -241,11 +256,11 @@ fixMov t src dst =
 
 fixMovsx :: Operand -> Operand -> CodeMonad ()
 fixMovsx src dst = do
-    let src' = if isConstant src then Reg R10 else src
-        dst' = if isStack dst then Reg R11 else dst
-    when (isConstant src) $ tell [Mov Longword src (Reg R10)]
-    tell [Movsx src' dst']
-    when (isStack dst) $ tell [Mov Quadword (Reg R11) dst]
+  let src' = if isConstant src then Reg R10 else src
+      dst' = if isStack dst then Reg R11 else dst
+  when (isConstant src) $ tell [Mov Longword src (Reg R10)]
+  tell [Movsx src' dst']
+  when (isStack dst) $ tell [Mov Quadword (Reg R11) dst]
 
 genericBinary :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
 genericBinary op st s1 s2 _ dst = do
@@ -255,12 +270,18 @@ genericBinary op st s1 s2 _ dst = do
       then [Mov st s2 (Reg R10), Binary (binOp op) st (Reg R10) dst]
       else [Binary (binOp op) st s2 dst]
 
-divide :: Register -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
-divide rx st s1 s2 _ dst = do
+divide :: Register -> Bool -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
+divide rx True st s1 s2 _ dst = do
   tell [Mov st s1 (Reg AX), Cdq st]
   tell $ case s2 of
     Imm _ -> [Mov st s2 (Reg R10), IDiv st (Reg R10)]
     _ -> [IDiv st s2]
+  tell [Mov st (Reg rx) dst]
+divide rx False st s1 s2 _ dst = do
+  tell [Mov st s1 (Reg AX), Mov st (Imm 0) (Reg DX)]
+  tell $ case s2 of
+    Imm _ -> [Mov st s2 (Reg R10), Div st (Reg R10)]
+    _ -> [Div st s2]
   tell [Mov st (Reg rx) dst]
 
 mult :: P.BinaryOp -> AsmType -> Operand -> Operand -> AsmType -> Operand -> CodeMonad ()
@@ -317,16 +338,32 @@ binOp P.Or = Or
 binOp P.Xor = Xor
 binOp P.LeftShift = LeftShift
 binOp P.RightShift = RightShift
+binOp P.RightLShift = RightLShift
 binOp _ = error "Bad binary operand"
 
 asmType :: P.Type -> AsmType
 asmType P.TInt = Longword
 asmType P.TLong = Quadword
+asmType P.TUInt = Longword
+asmType P.TULong = Quadword
 asmType _ = error "bad"
+
+cType :: T.Value -> CodeMonad P.Type
+cType (T.Constant (P.ConstInt _)) = return P.TInt
+cType (T.Constant (P.ConstLong _)) = return P.TLong
+cType (T.Constant (P.ConstUInt _)) = return P.TUInt
+cType (T.Constant (P.ConstULong _)) = return P.TULong
+cType (T.Var v) = do
+  syms <- asks symbols
+  case M.lookup v syms of
+    Just (t, _) -> return t
+    Nothing -> error "Hmm"
 
 expr :: T.Value -> CodeMonad (AsmType, Operand)
 expr (T.Constant (P.ConstInt i)) = return (Longword, Imm i)
 expr (T.Constant (P.ConstLong i)) = return (Quadword, Imm i)
+expr (T.Constant (P.ConstUInt i)) = return (Longword, Imm i)
+expr (T.Constant (P.ConstULong i)) = return (Quadword, Imm i)
 expr (T.Var v) = do
   s <- gets varList
   syms <- asks symbols
@@ -337,11 +374,13 @@ expr (T.Var v) = do
         Just x -> return (asmType t, Stack x)
         Nothing -> do
           minVal <- minOfVars
-          let newVal = if t == P.TLong
-                        then if minVal `mod` 8 /= 0
-                            then minVal - 12
-                            else minVal - 8
-                        else minVal - 4
+          let newVal =
+                if t == P.TLong || t == P.TULong
+                  then
+                    if minVal `mod` 8 /= 0
+                      then minVal - 12
+                      else minVal - 8
+                  else minVal - 4
           modify $ \x -> x {varList = M.insert v newVal (varList x)}
           return (asmType t, Stack newVal)
     Nothing -> error "Hmm"

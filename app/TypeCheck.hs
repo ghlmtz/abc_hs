@@ -10,6 +10,9 @@ module TypeCheck
     Block (..),
     BlockItem (..),
     TypeProg (..),
+    size,
+    signed,
+    getStatic,
   )
 where
 
@@ -17,10 +20,9 @@ import Control.Monad.RWS.Strict
 import Data.List (nub)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isNothing)
+import Data.Void (Void)
 import Parse (BinaryOp (..), Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..))
 import qualified Semantic as S
-import Data.Void (Void)
-import Data.Int (Int32, Int64)
 
 data IdentAttr
   = FunAttr {fDef :: Bool, fGlobal :: Bool}
@@ -38,7 +40,7 @@ data TypeState = TypeState
     funType :: Maybe Type
   }
 
-newtype TypeReader = TypeReader { switchType :: Maybe Type }
+newtype TypeReader = TypeReader {switchType :: Maybe Type}
 
 data TypedExpr = TypedExpr Expr Type
   deriving (Show)
@@ -103,6 +105,12 @@ newtype TypeProg = TypeProg [Declaration]
 
 type TypeMonad = RWS TypeReader [Void] TypeState
 
+getStatic :: (Integral b) => StaticInit -> b
+getStatic (IntInit x) = fromIntegral x
+getStatic (LongInit x) = fromIntegral x
+getStatic (UIntInit x) = fromIntegral x
+getStatic (ULongInit x) = fromIntegral x
+
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x {err = Just s}) *> error s
 
@@ -119,6 +127,8 @@ typeProg (S.SProgram f) = TypeProg <$> mapM typeDecl f
 evalConstant :: S.Expr -> Maybe StaticInit
 evalConstant (S.Constant (ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (S.Constant (ConstLong i)) = Just (LongInit (fromIntegral i))
+evalConstant (S.Constant (ConstUInt i)) = Just (UIntInit (fromIntegral i))
+evalConstant (S.Constant (ConstULong i)) = Just (ULongInit (fromIntegral i))
 evalConstant _ = Nothing
 
 convertTo :: TypedExpr -> Type -> TypedExpr
@@ -127,10 +137,22 @@ convertTo ex@(TypedExpr _ oldType) newType =
     then ex
     else TypedExpr (Cast newType ex) newType
 
+size :: Type -> Int
+size TInt = 4
+size TUInt = 4
+size _ = 8
+
+signed :: Type -> Bool
+signed TInt = True
+signed TLong = True
+signed _ = False
+
 commonType :: Type -> Type -> Type
 commonType a b
   | a == b = a
-  | otherwise = TLong
+  | size a == size b = if signed a then b else a
+  | size a > size b = a
+  | otherwise = b
 
 typeDecl :: S.Declaration -> TypeMonad Declaration
 typeDecl (S.FuncDecl name params s t@(TFun pTypes ret) (Just (S.Block items))) = do
@@ -229,7 +251,7 @@ getGlobal name s = do
   syms <- gets symbols
   case M.lookup name syms of
     Just (t, at) -> do
-      when (t /= TInt && t /= TLong) $ writeError "Function redeclared as variable"
+      when (t /= TInt && t /= TLong && t /= TUInt && t /= TULong) $ writeError "Function redeclared as variable"
       if s == Just Extern
         then return (attrGlobal at)
         else
@@ -237,6 +259,13 @@ getGlobal name s = do
             then writeError "Conflicting variable linkage"
             else return g
     Nothing -> return g
+
+convert :: (Integral a) => a -> Type -> StaticInit
+convert x TLong = LongInit (fromIntegral x)
+convert x TInt = IntInit (fromIntegral x)
+convert x TUInt = UIntInit (fromIntegral x)
+convert x TULong = ULongInit (fromIntegral x)
+convert _ _ = error "Shouldn't happen"
 
 blockVar :: S.Declaration -> TypeMonad Declaration
 blockVar (S.VarDecl _ (Just Extern) _ (Just _)) = writeError "Cannot initialize extern var decl"
@@ -253,9 +282,7 @@ blockVar (S.VarDecl name (Just Extern) typ Nothing) = do
 blockVar (S.VarDecl name (Just Static) t initial) = do
   let value = maybe (Just (IntInit 0)) evalConstant initial
   when (isNothing value) $ writeError "Cannot assign non-constant expr to static var"
-  newV <- case fromJust value of
-    IntInit x -> return $ if t == TLong then LongInit (fromIntegral x) else IntInit x
-    LongInit x -> return $ if t == TLong then LongInit x else IntInit (fromIntegral x)
+  let newV = convert (getStatic (fromJust value)) t
   modify $ \x -> x {symbols = M.insert name (t, StaticAttr (Initial newV) True) $ symbols x}
   return $ VarDecl name (Just Static) t Nothing
 blockVar (S.VarDecl name s t initial) = do
@@ -275,9 +302,6 @@ typeItem :: S.BlockItem -> TypeMonad BlockItem
 typeItem (S.S stmt) = S <$> typeStmt stmt
 typeItem (S.D decl) = D <$> typeDecl decl
 
-small :: Int64 -> Int32
-small = fromIntegral
-
 typeStmt :: S.Statement -> TypeMonad Statement
 typeStmt (S.Labelled name stmt) = Labelled name <$> typeStmt stmt
 typeStmt (S.Compound (S.Block items)) = Compound . Block <$> mapM typeItem items
@@ -289,19 +313,13 @@ typeStmt (S.If e1 s1 s2) = do
 typeStmt (S.Switch e s n cs) = do
   e' <- typeExpr e
   s' <- local (\l -> l {switchType = Just (snd e')}) $ typeStmt s
-  let frotz t c = case c of
-        IntInit x -> if t == TLong then LongInit (fromIntegral x) else IntInit x
-        LongInit x -> if t == TLong then LongInit x else IntInit (fromIntegral x)
+  let frotz t c = convert (getStatic c) t
   let newV = map (fmap (frotz (snd e'))) cs
   when (nub newV /= newV) $ writeError "Duplicate case statement"
   return $ Switch (fst e') s' n newV
 typeStmt (S.Case lbl e s) = do
   ty <- asks (fromJust . switchType)
-  let label = case e of 
-          IntInit x -> show x
-          LongInit x -> if ty /= TInt 
-            then show x
-            else show (small x)
+  let label = show $ convert (getStatic e) ty
       label' = if head label == '-' then "m" ++ tail label else label
   Labelled (lbl ++ "." ++ label') <$> typeStmt s
 typeStmt (S.Default s) = Default <$> typeStmt s
@@ -356,6 +374,8 @@ typeExpr (S.Var v) = do
   case t of
     Just (TInt, _) -> return (Var v, TInt)
     Just (TLong, _) -> return (Var v, TLong)
+    Just (TUInt, _) -> return (Var v, TUInt)
+    Just (TULong, _) -> return (Var v, TULong)
     Nothing -> writeError $ "This probably shouldn't happen" ++ show v
     _ -> writeError "Function name used as variable"
 typeExpr (S.CompoundAssignment op e r) = do
@@ -378,12 +398,14 @@ typeExpr (S.Unary op e) = do
 typeExpr (S.Binary op e1 e2) = do
   left <- typeExpr e1
   right <- typeExpr e2
+  let change RightShift ty = if signed ty then RightShift else RightLShift
+      change o _ = o
   return $
     if op == LogAnd || op == LogOr
       then (Binary op (uncurry TypedExpr left) (uncurry TypedExpr right), TInt)
       else
         if op == LeftShift || op == RightShift
-          then (Binary op (uncurry TypedExpr left) (convertTo (uncurry TypedExpr right) (snd left)), snd left)
+          then (Binary (change op (snd left)) (uncurry TypedExpr left) (convertTo (uncurry TypedExpr right) (snd left)), snd left)
           else do
             let common = commonType (snd left) (snd right)
                 convL = convertTo (uncurry TypedExpr left) common
@@ -403,6 +425,8 @@ typeExpr (S.Conditional cond e1 e2) = do
   return (Conditional (uncurry TypedExpr cond') convL convR, common)
 typeExpr (S.Constant e@(ConstInt _)) = return (Constant e, TInt)
 typeExpr (S.Constant e@(ConstLong _)) = return (Constant e, TLong)
+typeExpr (S.Constant e@(ConstUInt _)) = return (Constant e, TUInt)
+typeExpr (S.Constant e@(ConstULong _)) = return (Constant e, TULong)
 typeExpr (S.Cast ty e) = do
   t1 <- typeExpr e
   return (Cast ty (uncurry TypedExpr t1), ty)
