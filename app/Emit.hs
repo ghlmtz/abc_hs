@@ -4,7 +4,7 @@ module Emit
 where
 
 import Codegen
-import qualified Parse as P
+import qualified Semantic as S
 import TypeCheck (getStatic)
 
 showType :: AsmType -> String
@@ -78,14 +78,14 @@ showGlobal :: [Char] -> Bool -> [Char]
 showGlobal s True = "\t.globl " ++ s ++ "\n"
 showGlobal _ False = ""
 
-foo :: P.StaticInit -> Integer
+foo :: S.StaticInit -> Integer
 foo = getStatic
 
 showTopLevel :: TopLevel -> [Char]
 showTopLevel (FuncDef s global is) =
   showGlobal s global ++ "\t.text\n" ++ s ++ ":\n\tpushq\t%rbp\n\tmovq\t%rsp, %rbp\n" ++ concatMap (flip (++) "\n" . showInstruction) is
 showTopLevel (StaticVar s global align initial) =
-  let dat = if initial == P.IntInit 0 || initial == P.LongInit 0 || initial == P.UIntInit 0 || initial == P.ULongInit 0 then "\t.bss\n" else "\t.data\n"
+  let dat = if initial == S.IntInit 0 || initial == S.LongInit 0 || initial == S.UIntInit 0 || initial == S.ULongInit 0 then "\t.bss\n" else "\t.data\n"
       i = case foo initial of
         0 -> ":\n\t.zero " ++ show align
         x -> if align == 4 then ":\n\t.long " ++ show x else ":\n\t.quad " ++ show x

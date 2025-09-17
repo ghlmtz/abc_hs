@@ -11,8 +11,9 @@ where
 import Control.Monad.RWS.Strict
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, mapMaybe)
-import Parse (Const (..), StaticInit (..), Storage (..), Type (..), VarType (..))
+import Parse (Const (..), Storage (..), Type (..), VarType (..))
 import qualified Parse as P
+import Semantic (StaticInit (..))
 import TypeCheck (BinaryOp (..), IdentAttr (..))
 import qualified TypeCheck as T
 
@@ -55,6 +56,10 @@ data Instruction
   | Label String
   | FunctionCall String [Value] Value
   | ZeroExtend Value Value
+  | DoubleToInt Value Value
+  | DoubleToUInt Value Value
+  | IntToDouble Value Value
+  | UIntToDouble Value Value
   deriving (Show)
 
 data Value = Constant P.Const | Var String
@@ -74,6 +79,7 @@ convertSym (name, (TVar ty, StaticAttr T.Tentative global)) = pure $ case ty of
   TLong -> StaticVar name global TLong (LongInit 0)
   TUInt -> StaticVar name global TUInt (UIntInit 0)
   TULong -> StaticVar name global TULong (ULongInit 0)
+  TDouble -> StaticVar name global TDouble (DoubleInit 0)
 convertSym _ = Nothing
 
 funcDef :: T.Declaration -> TackyMonad (Maybe TopLevel)

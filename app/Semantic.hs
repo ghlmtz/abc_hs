@@ -7,14 +7,17 @@ module Semantic
     Block (..),
     BlockItem (..),
     SProgram (..),
+    StaticInit (..),
   )
 where
 
 import Control.Monad.Reader
 import Control.Monad.State
+import Data.Int (Int32, Int64)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust, isNothing)
-import Parse (StaticInit (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
+import Data.Word (Word32, Word64)
+import Parse (Storage (..), Type (..), UnaryOp (..), VarType (..))
 import qualified Parse as P
 
 data Expr
@@ -39,6 +42,19 @@ newtype Block = Block [BlockItem]
 
 data ForInit = InitDecl Declaration | InitExpr (Maybe Expr)
   deriving (Show)
+
+data StaticInit = IntInit Int32 | LongInit Int64 | UIntInit Word32 | ULongInit Word64 | DoubleInit Double
+  deriving (Eq)
+
+instance Show StaticInit where
+  show = showStatic
+
+showStatic :: StaticInit -> String
+showStatic (IntInit x) = show x
+showStatic (LongInit x) = show x
+showStatic (UIntInit x) = show x
+showStatic (ULongInit x) = show x
+showStatic (DoubleInit x) = show x
 
 data Statement
   = Return Expr
@@ -199,12 +215,14 @@ plotz (IntInit x) = IntInit (-x)
 plotz (LongInit x) = LongInit (-x)
 plotz (UIntInit _) = error "Sign on unsigned int"
 plotz (ULongInit _) = error "Sign on unsigned long"
+plotz (DoubleInit x) = DoubleInit (-x)
 
 evalConstant :: Expr -> Maybe StaticInit
 evalConstant (Constant (P.ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (Constant (P.ConstLong i)) = Just (LongInit (fromIntegral i))
 evalConstant (Constant (P.ConstUInt i)) = Just (UIntInit (fromIntegral i))
 evalConstant (Constant (P.ConstULong i)) = Just (ULongInit (fromIntegral i))
+evalConstant (Constant (P.ConstDouble d)) = Just (DoubleInit d)
 evalConstant (Unary Negate e) = plotz <$> evalConstant e
 evalConstant _ = Nothing
 
@@ -216,13 +234,13 @@ resolveStmt (P.If e1 e2 e3) = do
   r2 <- resolveStmt e2
   r3 <- traverse resolveStmt e3
   return $ If r1 r2 r3
-resolveStmt (P.While e s _) = do
+resolveStmt (P.While e s) = do
   label <- uniqueLabel
   local (newLoopLabel label) $ do
     e1 <- resolveExpr e
     s1 <- resolveStmt s
     return $ While e1 s1 label
-resolveStmt (P.DoWhile s e _) = do
+resolveStmt (P.DoWhile s e) = do
   label <- uniqueLabel
   local (newLoopLabel label) $ do
     e1 <- resolveExpr e
@@ -254,7 +272,7 @@ resolveStmt (P.Default s) = do
 resolveStmt (P.For i c p b _) = do
   label <- uniqueLabel
   local (newLoopLabel label) $ descend resolveFor (P.For i c p b label)
-resolveStmt (P.Switch e s _ _) = do
+resolveStmt (P.Switch e s) = do
   label <- uniqueLabel
   lbls <- gets switchLabels
   local (newSwitchLabel label lbls) $ do
@@ -265,10 +283,10 @@ resolveStmt (P.Switch e s _ _) = do
     oldLabels <- asks localSwitch
     modify $ \x -> x {switchLabels = oldLabels}
     return $ Switch e1 s1 label slbl
-resolveStmt (P.Break _) = do
+resolveStmt P.Break = do
   l <- asks breakLabel
   maybe (writeError "No label!") (return . Break) l
-resolveStmt (P.Continue _) = do
+resolveStmt P.Continue = do
   l <- asks continueLabel
   maybe (writeError "No label!") (return . Continue) l
 resolveStmt (P.Goto label) = return $ Goto label

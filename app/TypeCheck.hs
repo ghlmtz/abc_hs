@@ -22,8 +22,9 @@ import Data.List (nub)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isNothing)
 import Data.Void (Void)
-import Parse (Const (..), StaticInit (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
+import Parse (Const (..), Storage (..), Type (..), UnaryOp (..), VarType (..))
 import qualified Parse as P
+import Semantic (StaticInit (..))
 import qualified Semantic as S
 
 data IdentAttr
@@ -132,6 +133,8 @@ getStatic (LongInit x) = fromIntegral x
 getStatic (UIntInit x) = fromIntegral x
 getStatic (ULongInit x) = fromIntegral x
 
+-- getStatic (DoubleInit x) = fromDoub x
+
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x {err = Just s}) *> error s
 
@@ -171,6 +174,7 @@ signed _ = False
 commonType :: VarType -> VarType -> VarType
 commonType a b
   | a == b = a
+  | a == TDouble || b == TDouble = TDouble
   | size a == size b = if signed a then b else a
   | size a > size b = a
   | otherwise = b
@@ -419,6 +423,11 @@ typeExpr (S.Assignment e r) = do
   right <- typeExpr r
   let convR = convertTo (uncurry TypedExpr right) (snd left)
   return (Assignment (uncurry TypedExpr left) convR, snd left)
+typeExpr (S.Unary Complement e) = do
+  e' <- typeExpr e
+  when (snd e' == TDouble) $ writeError "Can't take bitwise complement of a double"
+  let ex = Unary Complement (uncurry TypedExpr e')
+  return (ex, snd e')
 typeExpr (S.Unary op e) = do
   e' <- typeExpr e
   let ex = Unary op (uncurry TypedExpr e')
@@ -429,6 +438,8 @@ typeExpr (S.Unary op e) = do
 typeExpr (S.Binary op e1 e2) = do
   left <- typeExpr e1
   right <- typeExpr e2
+  when (op == P.Remainder && (snd left == TDouble || snd right == TDouble)) $
+    writeError "Cannot take remainder of doubles"
   let change RightShift ty = if signed ty then RightShift else RightLShift
       change o _ = o
   return $
@@ -458,6 +469,7 @@ typeExpr (S.Constant e@(ConstInt _)) = return (Constant e, TInt)
 typeExpr (S.Constant e@(ConstLong _)) = return (Constant e, TLong)
 typeExpr (S.Constant e@(ConstUInt _)) = return (Constant e, TUInt)
 typeExpr (S.Constant e@(ConstULong _)) = return (Constant e, TULong)
+typeExpr (S.Constant e@(ConstDouble _)) = return (Constant e, TDouble)
 typeExpr (S.Cast ty e) = do
   t1 <- typeExpr e
   return (Cast ty (uncurry TypedExpr t1), ty)

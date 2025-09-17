@@ -14,17 +14,14 @@ module Parse
     Storage (..),
     Type (..),
     Const (..),
-    StaticInit (..),
     VarType (..),
   )
 where
 
 import Control.Monad.Combinators.Expr
-import Data.Int (Int32, Int64)
 import Data.List (partition)
 import Data.Maybe (isJust)
 import Data.Void (Void)
-import Data.Word (Word32, Word64)
 import Lex (CToken)
 import qualified Lex as L
 import Text.Megaparsec
@@ -32,20 +29,6 @@ import Text.Megaparsec
 type TokenParser = Parsec Void [CToken]
 
 type MayError = Either String
-
-data StaticInit = IntInit Int32 | LongInit Int64 | UIntInit Word32 | ULongInit Word64 | DoubleInit Double
-  deriving (Eq)
-
-instance Show StaticInit where
-  show :: StaticInit -> String
-  show = showStatic
-
-showStatic :: StaticInit -> String
-showStatic (IntInit x) = show x
-showStatic (LongInit x) = show x
-showStatic (UIntInit x) = show x
-showStatic (ULongInit x) = show x
-showStatic (DoubleInit x) = show x
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
   deriving (Show)
@@ -133,14 +116,14 @@ data Statement
   | Goto String
   | Compound Block
   | If Expr Statement (Maybe Statement)
-  | Switch Expr Statement String [Maybe StaticInit]
+  | Switch Expr Statement
   | Labelled String Statement
   | Case Expr Statement
   | Default Statement
-  | Break String
-  | Continue String
-  | While Expr Statement String
-  | DoWhile Statement Expr String
+  | Break
+  | Continue
+  | While Expr Statement
+  | DoWhile Statement Expr
   | For ForInit (Maybe Expr) (Maybe Expr) Statement String
   | Null
   deriving (Show)
@@ -290,24 +273,19 @@ statement =
 switchStmt :: TokenParser Statement
 switchStmt = do
   e <- isToken L.Switch *> isToken L.LeftParen *> expr <* isToken L.RightParen
-  s <- statement
-  return $ Switch e s "" []
+  Switch e <$> statement
 
 caseStmt :: TokenParser Statement
-caseStmt = do
-  e <- isToken L.Case *> ternary <* isToken L.Colon
-  Case e <$> statement
+caseStmt = Case <$> (isToken L.Case *> ternary <* isToken L.Colon) <*> statement
 
 defaultStmt :: TokenParser Statement
-defaultStmt = do
-  e <- isToken L.Default *> isToken L.Colon *> statement
-  return $ Default e
+defaultStmt = Default <$> (isToken L.Default *> isToken L.Colon *> statement)
 
 breakStmt :: TokenParser Statement
-breakStmt = Break "" <$ isToken L.Break <* isToken L.Semicolon
+breakStmt = Break <$ isToken L.Break <* isToken L.Semicolon
 
 continueStmt :: TokenParser Statement
-continueStmt = Continue "" <$ isToken L.Continue <* isToken L.Semicolon
+continueStmt = Continue <$ isToken L.Continue <* isToken L.Semicolon
 
 ifStmt :: TokenParser Statement
 ifStmt = do
@@ -319,14 +297,13 @@ ifStmt = do
 whileStmt :: TokenParser Statement
 whileStmt = do
   e <- isToken L.While *> isToken L.LeftParen *> expr <* isToken L.RightParen
-  s <- statement
-  return $ While e s ""
+  While e <$> statement
 
 doWhileStmt :: TokenParser Statement
 doWhileStmt = do
   s <- isToken L.Do *> statement
   e <- isToken L.While *> isToken L.LeftParen *> expr <* isToken L.RightParen <* isToken L.Semicolon
-  return $ DoWhile s e ""
+  return $ DoWhile s e
 
 forInit :: TokenParser ForInit
 forInit =

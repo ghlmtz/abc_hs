@@ -15,6 +15,7 @@ where
 import Control.Monad.RWS
 import qualified Data.Map as M
 import qualified Parse as P
+import qualified Semantic as S
 import qualified Tacky as T
 import TypeCheck (IdentAttr (..), signed)
 import qualified TypeCheck as TC
@@ -27,7 +28,7 @@ data AsmType = Longword | Quadword
 
 data TopLevel
   = FuncDef String Bool [Instruction]
-  | StaticVar String Bool Int P.StaticInit
+  | StaticVar String Bool Int S.StaticInit
   deriving (Show)
 
 data Instruction
