@@ -168,6 +168,7 @@ constType (T.TypedExpr _ TInt) = ConstInt
 constType (T.TypedExpr _ TLong) = ConstLong
 constType (T.TypedExpr _ TUInt) = ConstUInt
 constType (T.TypedExpr _ TULong) = ConstULong
+constType _ = error "constType"
 
 expr :: T.TypedExpr -> TackyMonad Value
 expr (T.TypedExpr (T.Assignment (T.TypedExpr (T.Var v) _) right) _) = do
@@ -262,6 +263,10 @@ expr (T.TypedExpr (T.Cast t1 e) _) = do
 
 casting :: VarType -> VarType -> Value -> Value -> TackyMonad ()
 casting t1 t2 ret dst
+  | t2 == TDouble && (t1 == TLong || t1 == TInt) = tell [DoubleToInt ret dst]
+  | t2 == TDouble && (t1 == TULong || t1 == TUInt) = tell [DoubleToUInt ret dst]
+  | t1 == TDouble && (t2 == TLong || t2 == TInt) = tell [IntToDouble ret dst]
+  | t1 == TDouble && (t2 == TULong || t2 == TUInt) = tell [UIntToDouble ret dst]
   | T.size t1 == T.size t2 = tell [Copy ret dst]
   | T.size t1 < T.size t2 = tell [Truncate ret dst]
   | T.signed t2 = tell [SignExtend ret dst]
@@ -322,6 +327,7 @@ makeCase cond name (ULongInit n) = do
       Jump lblName,
       Label end
     ]
+makeCase _ _ _ = error "Impossible"
 
 initFor :: T.ForInit -> TackyMonad ()
 initFor (T.InitExpr (Just e)) = void (expr (wrap e))
@@ -332,7 +338,9 @@ incDec :: BinaryOp -> T.TypedExpr -> Bool -> TackyMonad Value
 incDec op e post = do
   dst <- tackyVar (getType e)
   src <- expr e
-  let middle = [Binary op src (Constant . constType e $ 1) dst, Copy dst src]
+  let middle = case getType e of
+        TDouble -> [Binary op src (Constant . ConstDouble $ 1.0) dst, Copy dst src]
+        _ -> [Binary op src (Constant . constType e $ 1) dst, Copy dst src]
   if post
     then do
       ret <- tackyVar (getType e)

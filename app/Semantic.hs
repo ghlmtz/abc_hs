@@ -15,7 +15,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.Int (Int32, Int64)
 import qualified Data.Map as M
-import Data.Maybe (fromJust, isJust, isNothing)
+import Data.Maybe (fromJust, isJust)
 import Data.Word (Word32, Word64)
 import Parse (Storage (..), Type (..), UnaryOp (..), VarType (..))
 import qualified Parse as P
@@ -251,14 +251,16 @@ resolveStmt (P.Case e s) = do
   n <- resolveExpr e
   s1 <- resolveStmt s
   let n' = evalConstant n
-  when (isNothing n') $ writeError "Non-constant case expression"
-  case l of
-    Just l' -> do
-      lbls <- gets switchLabels
-      when (n' `elem` lbls) $ writeError "Duplicate case!"
-      modify $ \x -> x {switchLabels = n' : lbls}
-      return $ Case l' (fromJust n') s1
-    Nothing -> writeError "Not in switch!"
+  case n' of
+    Nothing -> writeError "Non-constant case expression"
+    Just (DoubleInit _) -> writeError "Non-integral case expression"
+    _ -> case l of
+      Just l' -> do
+        lbls <- gets switchLabels
+        when (n' `elem` lbls) $ writeError "Duplicate case!"
+        modify $ \x -> x {switchLabels = n' : lbls}
+        return $ Case l' (fromJust n') s1
+      Nothing -> writeError "Not in switch!"
 resolveStmt (P.Default s) = do
   l <- asks switchLabel
   s1 <- resolveStmt s

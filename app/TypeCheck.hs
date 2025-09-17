@@ -132,8 +132,7 @@ getStatic (IntInit x) = fromIntegral x
 getStatic (LongInit x) = fromIntegral x
 getStatic (UIntInit x) = fromIntegral x
 getStatic (ULongInit x) = fromIntegral x
-
--- getStatic (DoubleInit x) = fromDoub x
+getStatic _ = error "bad"
 
 writeError :: String -> TypeMonad a
 writeError s = modify (\x -> x {err = Just s}) *> error s
@@ -153,6 +152,7 @@ evalConstant (S.Constant (ConstInt i)) = Just (IntInit (fromIntegral i))
 evalConstant (S.Constant (ConstLong i)) = Just (LongInit (fromIntegral i))
 evalConstant (S.Constant (ConstUInt i)) = Just (UIntInit (fromIntegral i))
 evalConstant (S.Constant (ConstULong i)) = Just (ULongInit (fromIntegral i))
+evalConstant (S.Constant (ConstDouble d)) = Just (DoubleInit d)
 evalConstant _ = Nothing
 
 convertTo :: TypedExpr -> VarType -> TypedExpr
@@ -289,6 +289,14 @@ convert TLong = LongInit . getStatic
 convert TInt = IntInit . getStatic
 convert TUInt = UIntInit . getStatic
 convert TULong = ULongInit . getStatic
+convert _ = error "bad"
+
+convertDouble :: StaticInit -> StaticInit
+convertDouble (IntInit x) = DoubleInit (fromIntegral x)
+convertDouble (UIntInit x) = DoubleInit (fromIntegral x)
+convertDouble (LongInit x) = DoubleInit (fromIntegral x)
+convertDouble (ULongInit x) = DoubleInit (fromIntegral x)
+convertDouble d = d
 
 blockVar :: String -> Maybe Storage -> VarType -> Maybe S.Expr -> TypeMonad Declaration
 blockVar _ (Just Extern) _ (Just _) = writeError "Cannot initialize extern var decl"
@@ -299,13 +307,13 @@ blockVar name (Just Extern) typ Nothing = do
     Just (TVar oldType, _) -> do
       when (oldType /= typ) $ writeError "Type mismatch"
       return $ VarDecl name (Just Extern) typ Nothing
-    _ -> do
+    Nothing -> do
       modify $ \x -> x {symbols = M.insert name (TVar typ, StaticAttr NoInitializer True) syms}
       return $ VarDecl name (Just Extern) typ Nothing
 blockVar name (Just Static) t initial = do
   let value = maybe (Just (IntInit 0)) evalConstant initial
   when (isNothing value) $ writeError "Cannot assign non-constant expr to static var"
-  let newV = convert t (fromJust value)
+  let newV = if t == TDouble then convertDouble (fromJust value) else convert t (fromJust value)
   modify $ \x -> x {symbols = M.insert name (TVar t, StaticAttr (Initial newV) True) $ symbols x}
   return $ VarDecl name (Just Static) t Nothing
 blockVar name s t initial = do
@@ -334,6 +342,7 @@ typeStmt (S.If e1 s1 s2) = do
   return $ If (fst e1') s1' s2'
 typeStmt (S.Switch e s n cs) = do
   e' <- typeExpr e
+  when (snd e' == TDouble) $ writeError "Non-integral switch expression"
   s' <- local (\l -> l {switchType = Just (snd e')}) $ typeStmt s
   let newV = map (fmap (convert (snd e'))) cs
   when (nub newV /= newV) $ writeError "Duplicate case statement"
@@ -438,8 +447,8 @@ typeExpr (S.Unary op e) = do
 typeExpr (S.Binary op e1 e2) = do
   left <- typeExpr e1
   right <- typeExpr e2
-  when (op == P.Remainder && (snd left == TDouble || snd right == TDouble)) $
-    writeError "Cannot take remainder of doubles"
+  when (op `elem` [P.Remainder, P.And, P.Or, P.Xor, P.LeftShift, P.RightShift] && (snd left == TDouble || snd right == TDouble)) $
+    writeError "Invalid double operand"
   let change RightShift ty = if signed ty then RightShift else RightLShift
       change o _ = o
   return $
