@@ -21,6 +21,7 @@ where
 
 import Control.Monad.Combinators.Expr
 import Data.Int (Int32, Int64)
+import Data.List (partition)
 import Data.Maybe (isJust)
 import Data.Void (Void)
 import Data.Word (Word32, Word64)
@@ -32,7 +33,7 @@ type TokenParser = Parsec Void [CToken]
 
 type MayError = Either String
 
-data StaticInit = IntInit Int32 | LongInit Int64 | UIntInit Word32 | ULongInit Word64
+data StaticInit = IntInit Int32 | LongInit Int64 | UIntInit Word32 | ULongInit Word64 | DoubleInit Double
   deriving (Eq)
 
 instance Show StaticInit where
@@ -44,6 +45,7 @@ showStatic (IntInit x) = show x
 showStatic (LongInit x) = show x
 showStatic (UIntInit x) = show x
 showStatic (ULongInit x) = show x
+showStatic (DoubleInit x) = show x
 
 data UnaryOp = Complement | Negate | Not | PreInc | PostInc | PreDec | PostDec
   deriving (Show)
@@ -72,7 +74,7 @@ data BinaryOp
 data Storage = Static | Extern
   deriving (Show, Eq)
 
-data Const = ConstInt Integer | ConstLong Integer | ConstUInt Integer | ConstULong Integer
+data Const = ConstInt Integer | ConstLong Integer | ConstUInt Integer | ConstULong Integer | ConstDouble Double
   deriving (Show, Eq)
 
 data Expr
@@ -108,6 +110,7 @@ data VarType
   | TLong
   | TUInt
   | TULong
+  | TDouble
   deriving (Show, Eq)
 
 data Type
@@ -176,15 +179,13 @@ typeCalc long sign =
 
 function :: TokenParser Declaration
 function = do
-  specs <- some specifier
+  specs <- types
   name <- getIdent
   ps <- isToken L.LeftParen *> params <* isToken L.RightParen
   body <- (Just <$> block) <|> (isToken L.Semicolon >> return Nothing)
-  let (_, long, sign, storage) = foldl foldSpec (False, False, Nothing, Nothing) specs
-      types = map fst ps
+  let ts = map fst ps
       names = map snd ps
-      t = typeCalc long sign
-  return $ FuncDecl name names storage (TFun types t) body
+  return $ FuncDecl name names (snd specs) (TFun ts (fst specs)) body
 
 params :: TokenParser [(VarType, String)]
 params =
@@ -192,12 +193,24 @@ params =
     <$ isToken L.Void
       <|> sepBy1 param (isToken L.Comma)
 
+checkDouble :: [CToken] -> TokenParser VarType
+checkDouble l
+  | length l == 1 && head l == L.Double = return TDouble
+  | L.Double `elem` l = error "Double with other type"
+  | otherwise = do
+      let specs = map typeSpecifier l
+      let (nt, long, sign) = foldl foldSpec (False, False, Nothing) specs
+      if not (nt || long || isJust sign)
+        then error "No type"
+        else return $ typeCalc long sign
+
 param :: TokenParser (VarType, String)
 param = do
-  specs <- some typeSpecifier
+  ts <- types
   i <- getIdent
-  let (_, long, sign, _) = foldl foldSpec (False, False, Nothing, Nothing) specs
-  return (typeCalc long sign, i)
+  if isJust (snd ts)
+    then error "Storage specifier in function param"
+    else return (fst ts, i)
 
 blockItem :: TokenParser BlockItem
 blockItem = D <$> declaration <|> S <$> statement
@@ -210,42 +223,43 @@ declaration = try variable <|> function
 
 variable :: TokenParser Declaration
 variable = do
-  specs <- some specifier
+  specs <- types
   name <- getIdent
   assign <- optional (isToken L.Equal *> expr)
   _ <- isToken L.Semicolon
-  let (nt, long, sign, storage) = foldl foldSpec (False, False, Nothing, Nothing) specs
-      t = typeCalc long sign
-  if not (nt || long || isJust sign)
-    then error "No type"
-    else
-      return $ VarDecl name storage t assign
+  return $ VarDecl name (snd specs) (fst specs) assign
 
-foldSpec :: (Bool, Bool, Maybe Sign, Maybe Storage) -> (Bool, Bool, Maybe Sign, Maybe Storage) -> (Bool, Bool, Maybe Sign, Maybe Storage)
-foldSpec (False, b, c, d) (True, _, _, _) = (True, b, c, d)
-foldSpec (a, False, c, d) (_, True, _, _) = (a, True, c, d)
-foldSpec (a, b, Nothing, d) (_, _, Just x, _) = (a, b, Just x, d)
-foldSpec (a, b, c, Nothing) (_, _, _, Just x) = (a, b, c, Just x)
+foldSpec :: (Bool, Bool, Maybe Sign) -> (Bool, Bool, Maybe Sign) -> (Bool, Bool, Maybe Sign)
+foldSpec (False, b, c) (True, _, _) = (True, b, c)
+foldSpec (a, False, c) (_, True, _) = (a, True, c)
+foldSpec (a, b, Nothing) (_, _, Just x) = (a, b, Just x)
 foldSpec _ _ = error "Invalid specifier"
 
-typeSpecifier :: TokenParser (Bool, Bool, Maybe Sign, Maybe a)
-typeSpecifier =
-  (True, False, Nothing, Nothing)
-    <$ isToken L.Int
-      <|> (False, True, Nothing, Nothing)
-    <$ isToken L.Long
-      <|> (False, False, Just Signed, Nothing)
-    <$ isToken L.Signed
-      <|> (False, False, Just Unsigned, Nothing)
-    <$ isToken L.Unsigned
+typeSpecifier :: CToken -> (Bool, Bool, Maybe Sign)
+typeSpecifier L.Int = (True, False, Nothing)
+typeSpecifier L.Long = (False, True, Nothing)
+typeSpecifier L.Signed = (False, False, Just Signed)
+typeSpecifier L.Unsigned = (False, False, Just Unsigned)
+typeSpecifier _ = error "Invalid type"
 
-specifier :: TokenParser (Bool, Bool, Maybe Sign, Maybe Storage)
-specifier =
-  typeSpecifier
-    <|> (False, False, Nothing, Just Static)
-    <$ isToken L.Static
-      <|> (False, False, Nothing, Just Extern)
-    <$ isToken L.Extern
+checkStorage :: (Monad m) => [CToken] -> m (Maybe Storage)
+checkStorage l
+  | length l == 1 && head l == L.Static = return $ Just Static
+  | length l == 1 && head l == L.Extern = return $ Just Extern
+  | null l = return Nothing
+  | otherwise = error "Storage specifier with other storage specifier"
+
+types :: TokenParser (VarType, Maybe Storage)
+types = do
+  specs <- some specifier
+  let typeSpecifiers t = t `elem` [L.Int, L.Long, L.Signed, L.Unsigned, L.Double]
+      foo = partition typeSpecifiers specs
+  bar <- checkDouble (fst foo)
+  baz <- checkStorage (snd foo)
+  return (bar, baz)
+
+specifier :: TokenParser CToken
+specifier = isToken L.Int <|> isToken L.Long <|> isToken L.Signed <|> isToken L.Unsigned <|> isToken L.Double <|> isToken L.Static <|> isToken L.Extern
 
 statement :: TokenParser Statement
 statement =
@@ -255,7 +269,8 @@ statement =
       <|> Return
     <$> (isToken L.Return *> expr <* isToken L.Semicolon)
       <|> ifStmt
-      <|> goto
+      <|> Goto
+    <$> (isToken L.Goto *> getIdent <* isToken L.Semicolon)
       <|> Expression
     <$> expr
     <* isToken L.Semicolon
@@ -270,12 +285,7 @@ statement =
       <|> caseStmt
       <|> defaultStmt
   where
-    labelStmt = do
-      s <- getIdent <* isToken L.Colon
-      Labelled s <$> statement
-    goto = do
-      s <- isToken L.Goto *> getIdent <* isToken L.Semicolon
-      return $ Goto s
+    labelStmt = Labelled <$> getIdent <* isToken L.Colon <*> statement
 
 switchStmt :: TokenParser Statement
 switchStmt = do
@@ -294,14 +304,10 @@ defaultStmt = do
   return $ Default e
 
 breakStmt :: TokenParser Statement
-breakStmt = do
-  _ <- isToken L.Break <* isToken L.Semicolon
-  return $ Break ""
+breakStmt = Break "" <$ isToken L.Break <* isToken L.Semicolon
 
 continueStmt :: TokenParser Statement
-continueStmt = do
-  _ <- isToken L.Continue <* isToken L.Semicolon
-  return $ Continue ""
+continueStmt = Continue "" <$ isToken L.Continue <* isToken L.Semicolon
 
 ifStmt :: TokenParser Statement
 ifStmt = do
@@ -361,6 +367,7 @@ term' =
     <|> lConstant
     <|> uConstant
     <|> ulConstant
+    <|> doubleConstant
     <|> var
     <|> unary
     <|> try cast
@@ -368,9 +375,10 @@ term' =
 
 cast :: TokenParser Expr
 cast = do
-  t <- between (isToken L.LeftParen) (isToken L.RightParen) $ some typeSpecifier
-  let (_, long, sign, _) = foldl foldSpec (False, False, Nothing, Nothing) t
-  Cast (typeCalc long sign) <$> term
+  t <- between (isToken L.LeftParen) (isToken L.RightParen) types
+  if isJust (snd t)
+    then error "Storage class specifier in cast"
+    else Cast (fst t) <$> term
 
 var :: TokenParser Expr
 var = do
@@ -389,6 +397,14 @@ constant = do
     if getConstant c + 1 > (^) (2 :: Integer) (31 :: Integer)
       then Constant (ConstLong (getConstant c))
       else Constant (ConstInt (getConstant c))
+
+doubleConstant :: TokenParser Expr
+doubleConstant = do
+  let isConstant (L.Float _) = True
+      isConstant _ = False
+      getConstant (L.Float x) = x
+      getConstant _ = 0
+  Constant . ConstDouble . getConstant <$> satisfy isConstant
 
 lConstant :: TokenParser Expr
 lConstant = do

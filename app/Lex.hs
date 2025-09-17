@@ -20,6 +20,7 @@ data CToken
   | LConstant Integer
   | UConstant Integer
   | ULConstant Integer
+  | Float Double
   | LeftParen
   | RightParen
   | LeftBrace
@@ -80,6 +81,7 @@ data CToken
   | Long
   | Signed
   | Unsigned
+  | Double
   deriving (Show, Eq, Ord)
 
 lexer :: String -> MayError [CToken]
@@ -97,6 +99,7 @@ skipSpace =
 parseFile :: Parser CToken
 parseFile =
   parseIdent
+    <|> try parseFloat
     <|> parseConstant
     <|> parseSymbols
 
@@ -106,6 +109,31 @@ parseIdent = do
   rest <- many (alphaNumChar <|> char '_')
   let s = first : rest
   return $ fromMaybe (Identifier s) $ lookup s reserved
+
+parseFloat :: Parser CToken
+parseFloat = do
+  Float <$> (try parseScientific <|> parseFractional) <* notFollowedBy (letterChar <|> char '_' <|> char '.')
+
+parseScientific :: Parser Double
+parseScientific = do
+  signif <- try parseFloat2 <|> some digitChar <* optional (char '.')
+  e <- (char 'e' <|> char 'E') *> optional (string "+" <|> string "-")
+  expNum <- some digitChar
+  return $ read $ signif ++ maybe "e" ("e" ++) e ++ expNum
+
+parseFractional :: Parser Double
+parseFractional = read <$> (try parseFloat2 <|> parseFloat3)
+
+parseFloat2 :: Parser String
+parseFloat2 = do
+  i <- optional (some digitChar) <* char '.'
+  j <- some digitChar
+  return $ fromMaybe "0" i ++ "." ++ j
+
+parseFloat3 :: Parser String
+parseFloat3 = do
+  i <- some digitChar <* char '.'
+  return $ i ++ ".0"
 
 parseConstant :: Parser CToken
 parseConstant = do
@@ -175,6 +203,7 @@ reserved =
     ("continue", Continue),
     ("default", Default),
     ("do", Do),
+    ("double", Double),
     ("else", Else),
     ("extern", Extern),
     ("for", For),
